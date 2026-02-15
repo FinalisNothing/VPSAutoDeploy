@@ -1,0 +1,288 @@
+# /etc/fail2ban/jail.local
+# Architecture: Xray(M+H+K+A) + Nginx + UFW
+# ============================================================
+#
+# 流量路径:
+#   a.domain.com (CF 小黄云) → CF 边缘 → TCP 443 → Xray → UDS → Nginx
+#   b.domain.com (DNS only)  → TCP 443 → Xray → UDS → Nginx
+#   b.domain.com (DNS only)  → UDP 443 → Nginx (QUIC 直连)
+#   b.domain.com (DNS only)  → TCP 80  → Nginx (HTTP 直连)
+#
+# 日志中的 IP:
+#   access.log 第一个字段是 $client_ip:
+#     - CF 回源: 用户真实 IP (从 CF-Connecting-IP 提取)
+#     - 直连:    客户端真实 IP
+#   error.log "client:" 字段是 $remote_addr:
+#     - CF 回源: CF 边缘 IP (从 PROXY protocol)
+#     - 直连:    客户端真实 IP
+#
+# fail2ban + UFW 的作用范围:
+#   - 直连 b.domain.com / SSH → 完全有效
+#   - CF 代理 a.domain.com    → UFW 无法拦截 (流量从 CF 边缘 IP 到达)
+#     CF 代理流量的防护应在 Cloudflare Dashboard 的 WAF/Rate Limiting 中配置
+#
+# CF IP 必须加入 ignoreip:
+#   error.log 中部分场景会记录 CF 边缘 IP,
+#   如果 fail2ban 封了 CF 边缘 IP, 所有 CDN 流量中断
+#
+# 注意：某些早期 TLS 错误(如 handshake rejected)在 UDS 场景
+# 可能记录为 "client: unix:"，不包含可封禁公网 IP。
+#
+# ============================================================
+
+[DEFAULT]
+
+# --- Ban action: use UFW ---
+# ufw action runs: ufw insert 1 deny from <ip> to any
+# This blocks the IP from ALL ports (SSH, HTTP, HTTPS, etc.)
+banaction = ufw
+banaction_allports = ufw
+
+# --- Default timing ---
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+
+# --- Ignore list ---
+# Localhost + Cloudflare IPv4 + IPv6
+#
+# You can add your own static safe-list entries below.
+# update-cloudflare-ips.sh will keep your custom entries and
+# refresh only Cloudflare ranges.
+ignoreip = 127.0.0.1/8
+           ::1
+           173.245.48.0/20
+           103.21.244.0/22
+           103.22.200.0/22
+           103.31.4.0/22
+           141.101.64.0/18
+           108.162.192.0/18
+           190.93.240.0/20
+           188.114.96.0/20
+           197.234.240.0/22
+           198.41.128.0/17
+           162.158.0.0/15
+           104.16.0.0/13
+           104.24.0.0/14
+           172.64.0.0/13
+           131.0.72.0/22
+           2400:cb00::/32
+           2606:4700::/32
+           2803:f800::/32
+           2405:b500::/32
+           2405:8100::/32
+           2a06:98c0::/29
+           2c0f:f248::/32
+
+# --- Progressive ban (repeat offenders get longer bans) ---
+bantime.increment = true
+bantime.factor   = 2
+bantime.maxtime  = 4w
+bantime.formula  = ban.Time * math.exp(float(ban.Count+1)*banFactor)/math.exp(1*banFactor)
+
+# --- Backend ---
+backend = auto
+
+
+# =============================================================
+#                         SSH
+# =============================================================
+
+[sshd]
+enabled  = true
+port     = 22
+filter   = sshd
+# aggressive = normal + ddos + extra:
+#   catches auth failures, invalid users, connection floods,
+#   protocol abuse, algorithm negotiation failures
+mode     = aggressive
+logpath  = /var/log/auth.log
+maxretry = 3
+findtime = 10m
+bantime  = 1h
+
+
+# =============================================================
+#                    NGINX - BUILT-IN FILTERS
+# =============================================================
+
+# --- Bad Requests (400) ---
+# Catches: empty requests, binary garbage, malformed HTTP,
+# protocol probing (non-HTTP on port 80/443)
+# Log source: access log (uses $client_ip = real IP)
+[nginx-bad-request]
+enabled  = true
+port     = http,https
+filter   = nginx-bad-request
+logpath  = /nginx/logs/access.log
+maxretry = 3
+findtime = 1d
+bantime  = 1d
+
+# --- Bot/Scanner Search ---
+# Catches: 404 requests for /wp-admin, /phpmyadmin, /roundcube,
+# /cgi-bin, /mysqladmin, etc. (patterns from botsearch-common)
+# We extend the pattern list via botsearch-common.local
+# Log source: access log (uses $client_ip = real IP)
+[nginx-botsearch]
+enabled  = true
+port     = http,https
+filter   = nginx-botsearch
+logpath  = /nginx/logs/access.log
+maxretry = 5
+findtime = 10m
+bantime  = 24h
+
+# --- HTTP Auth Failures ---
+# Catches: wrong password / user not found for HTTP Basic Auth
+# In aggressive mode, also catches SSL fallback probing
+# Log source: error log (CF 流量中 client: 是 CF 边缘 IP, 已在 ignoreip)
+#
+# DISABLED: 当前架构无 HTTP Basic Auth 配置, nginx 不会产生 auth failure 日志。
+# 如果将来启用了 HTTP Basic Auth (如保护某个 location), 将 enabled 改为 true。
+[nginx-http-auth]
+enabled  = false
+port     = http,https
+filter   = nginx-http-auth
+mode     = aggressive
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# --- Rate Limit Violations ---
+# Catches: IPs exceeding nginx limit_req thresholds
+# REQUIRES: nginx.conf 中配置了 limit_req_zone (见 nginx-additions.conf 第 1 节)
+#   若未配置, 此 jail 空转 (不消耗显著资源但无防护效果)
+#   deploy.sh 会检测并警告
+# NOTE: nginx limit_req zone key 用的是 $client_ip (真实 IP),
+#       但 error.log "client:" 字段是 $remote_addr (CF 流量=CF 边缘 IP)
+#       CF 边缘 IP 已在 ignoreip, 所以不会误封
+# Log source: error log
+[nginx-limit-req]
+enabled  = true
+port     = http,https
+filter   = nginx-limit-req
+logpath  = /nginx/logs/error.log
+maxretry = 30
+findtime = 1m
+bantime  = 1h
+
+# --- Forbidden Access ---
+# Catches: requests denied by nginx "deny all;" rules
+# e.g., accessing /.env, /.git, /. files
+# REQUIRES: nginx.conf 中配置了 deny all 规则 (见 nginx-additions.conf 第 2 节)
+#   若未配置, 此 jail 空转 (不消耗显著资源但无防护效果)
+#   deploy.sh 会检测并警告
+# Log source: error log (CF 流量中 client: 是 CF 边缘 IP, 已在 ignoreip)
+[nginx-forbidden]
+enabled  = true
+port     = http,https
+filter   = nginx-forbidden
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 24h
+
+
+# =============================================================
+#                   NGINX - CUSTOM FILTERS
+# =============================================================
+
+# --- SSL Handshake Errors ---
+# Catches: SSL probing, invalid TLS
+#
+# 有效范围:
+#   - UDP 443 QUIC 直连: 完全有效 (error.log client: 为真实客户端 IP)
+#   - TCP 443 经 Xray UDS 转发: 大部分无效
+#     ssl_reject_handshake 等早期 TLS 错误的 client: 字段为 "unix:",
+#     filter 无法提取公网 IP。仅部分后续 SSL 错误 (如协商后失败) 可提取 IP。
+#
+# 保留启用: 对 QUIC 直连场景仍有防护价值, 且不产生误封。
+[nginx-sslerror]
+enabled  = true
+port     = http,https
+filter   = nginx-sslerror
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# --- Path Scanning / Vulnerability Probing ---
+# Catches: requests for known sensitive paths that return 4xx
+# (.env, .git, wp-config.php, actuator, swagger, etc.)
+# Stricter than botsearch - covers broader attack surface
+# Log source: access log (uses $client_ip = real IP)
+[nginx-path-scan]
+enabled  = true
+port     = http,https
+filter   = nginx-path-scan
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- Protocol Probing (non-HTTP on HTTP ports) ---
+# Catches: binary data, CONNECT, SSTP, PROPFIND, RTSP, SSH-2.0,
+# Gh0st RAT, mstshash (RDP), MongoDB/Redis probes, etc.
+# 100% malicious - no legitimate client sends these to HTTP ports
+# maxretry=1: single occurrence is conclusive
+# Log source: access log (uses $client_ip = real IP)
+[nginx-protocol-probe]
+enabled  = true
+port     = http,https
+filter   = nginx-protocol-probe
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- Known Malicious Scanner User-Agents ---
+# Catches: zgrab, l9scan, LeakIX, Nuclei, masscan, sqlmap, nikto,
+# gobuster, ffuf, httpx, silver.inc, SecurityResearchBot, etc.
+# 100% malicious - these UAs identify as scanning tools
+# maxretry=1: single request with scanner UA is conclusive
+# Log source: access log (uses $client_ip = real IP)
+[nginx-scanner-ua]
+enabled  = true
+port     = http,https
+filter   = nginx-scanner-ua
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- 4xx Error Flood ---
+# Catches: IPs generating excessive client errors
+# (scanners, directory brute-force, credential stuffing)
+# Log source: access log (uses $client_ip = real IP)
+#
+# IMPORTANT: 你的正常代理路径 /xhttp_in_path 返回 200, 不会触发此 jail.
+# 但如果客户端 path 配错, Xray 客户端会快速重试产生大量 404.
+# maxretry=30 留足余量, 避免配置调试期间误封自己的运营商 NAT IP.
+# 真正的扫描器(dirbuster/gobuster)每秒数百请求, 30 次/分钟拦不住它们
+# → 靠 nginx deny rules + path-scan jail 在更早阶段拦截.
+[nginx-4xx-flood]
+enabled  = true
+port     = http,https
+filter   = nginx-4xx-flood
+logpath  = /nginx/logs/access.log
+maxretry = 15
+findtime = 1m
+bantime  = 1h
+
+
+# =============================================================
+#                     RECIDIVE (Escalation)
+# =============================================================
+
+# Monitors fail2ban's own log. If an IP gets banned 3 times
+# across ANY jail within 1 day, ban for 1 week.
+# This is the "three strikes" escalation.
+[recidive]
+enabled  = true
+logpath  = /var/log/fail2ban.log
+banaction = ufw
+maxretry = 3
+findtime = 1d
+bantime  = 1w

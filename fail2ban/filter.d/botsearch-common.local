@@ -1,0 +1,10 @@
+# /etc/fail2ban/filter.d/botsearch-common.local
+#
+# Extends the default botsearch-common.conf <block> pattern
+# to cover more scan targets commonly probed by bots.
+# This file is automatically merged with the shipped
+# botsearch-common.conf (*.local overrides *.conf).
+
+[Init]
+
+block = \/?(<webmail>|<phpmyadmin>|<wordpress>|cgi-bin|mysqladmin|\.env|\.git|wp-content|wp-includes|xmlrpc\.php|api/|solr/|actuator|vendor/|debug/|console/|telescope|manager|_profiler|elfinder|adminer|\.aws|docker|grafana|prometheus|kibana|\.well-known/security\.txt)[^,]*
