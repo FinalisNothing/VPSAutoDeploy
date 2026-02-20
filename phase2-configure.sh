@@ -293,8 +293,6 @@ show_config_summary() {
 }
 
 if load_config; then
-    # Strip comments and empty lines from pre-filled template
-    # (load_config sources the file, comments are naturally ignored by bash)
     msg_ok "Loaded configuration from $CONFIG_FILE"
     echo ""
     show_config_summary
@@ -309,57 +307,89 @@ if load_config; then
     # Re-save to normalize (auto-generated paths, stripped comments)
     save_config
 else
-    msg_info "No config file found. Collecting parameters interactively..."
-    msg_info "(Tip: run with --generate-config to create a template file instead)"
+    echo "  No config file found."
     echo ""
-
-    prompt_value "New Linux username" ""
-    USERNAME="$REPLY"; validate_username "$USERNAME"
-
-    prompt_password "Password for $USERNAME"
-    USER_PASSWORD="$REPLY"; validate_nonempty "USER_PASSWORD" "$USER_PASSWORD"
-
-    prompt_password "New root password"
-    ROOT_PASSWORD="$REPLY"; validate_nonempty "ROOT_PASSWORD" "$ROOT_PASSWORD"
-
-    prompt_value "Custom SSH port" "2222"
-    SSH_PORT="$REPLY"; validate_port "SSH_PORT" "$SSH_PORT"
-
-    prompt_value "ACME registration email" ""
-    ACME_EMAIL="$REPLY"; validate_email "$ACME_EMAIL"
-
-    prompt_value "Direct domain (e.g. b.example.com)" ""
-    DIRECT_DOMAIN="$REPLY"; validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
-
-    prompt_value "CDN origin domain (e.g. a.example.com)" ""
-    CDN_DOMAIN="$REPLY"; validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
-
-    DEFAULT_XHTTP=$(generate_random_path 32)
-    prompt_value "XHTTP location path" "$DEFAULT_XHTTP"
-    XHTTP_PATH="$REPLY"; validate_path "XHTTP_PATH" "$XHTTP_PATH"
-
-    DEFAULT_CLIPROXY=$(generate_random_path 32)
-    prompt_value "CLIProxyAPI location path" "$DEFAULT_CLIPROXY"
-    CLIPROXY_PATH="$REPLY"; validate_path "CLIPROXY_PATH" "$CLIPROXY_PATH"
-
-    DEFAULT_XUI_PATH=$(generate_random_path 32)
-    prompt_value "3x-ui panel location path" "$DEFAULT_XUI_PATH"
-    XUI_PANEL_PATH="$REPLY"; validate_path "XUI_PANEL_PATH" "$XUI_PANEL_PATH"
-
-    prompt_value "3x-ui panel listen port" "54321"
-    XUI_PANEL_PORT="$REPLY"; validate_port "XUI_PANEL_PORT" "$XUI_PANEL_PORT"
-
-    prompt_value "Upstream disguise website domain" "quarkus.io"
-    BACKEND_WEB="$REPLY"; validate_domain "BACKEND_WEB" "$BACKEND_WEB"
-
+    echo "  1) Upload config file — I will SCP vpsautodeploy.conf to VPS"
+    echo "  2) Interactive input  — Enter values one by one in this terminal"
     echo ""
-    show_config_summary
-    echo ""
-    read -r -p "Proceed? [y/N]: " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted by user."
+    read -r -p "Choose [1/2]: " INPUT_MODE
 
-    save_config
-    msg_ok "Configuration saved to $CONFIG_FILE"
+    if [ "$INPUT_MODE" = "1" ]; then
+        echo ""
+        msg_info "Upload vpsautodeploy.conf to any user's home directory:"
+        echo ""
+        echo "  scp vpsautodeploy.conf root@<VPS_IP>:~/"
+        echo "  scp vpsautodeploy.conf <user>@<VPS_IP>:~/"
+        echo ""
+        msg_info "Tip: generate a template first with: bash phase2-configure.sh --generate-config"
+        echo ""
+        msg_info "Waiting for vpsautodeploy.conf to appear..."
+
+        while ! load_config; do
+            sleep 2
+        done
+
+        msg_ok "Config file loaded from $CONFIG_FILE"
+        echo ""
+        show_config_summary
+        echo ""
+        msg_warn "Make sure the file transfer is FULLY COMPLETE before continuing."
+        read -r -p "Confirm config is correct? Press Enter to continue (or Ctrl+C to abort)..."
+        validate_config
+        save_config
+    else
+        msg_info "Collecting parameters interactively..."
+        msg_info "(Tip: run with --generate-config to create a template file instead)"
+        echo ""
+
+        prompt_value "New Linux username" ""
+        USERNAME="$REPLY"; validate_username "$USERNAME"
+
+        prompt_password "Password for $USERNAME"
+        USER_PASSWORD="$REPLY"; validate_nonempty "USER_PASSWORD" "$USER_PASSWORD"
+
+        prompt_password "New root password"
+        ROOT_PASSWORD="$REPLY"; validate_nonempty "ROOT_PASSWORD" "$ROOT_PASSWORD"
+
+        prompt_value "Custom SSH port" "2222"
+        SSH_PORT="$REPLY"; validate_port "SSH_PORT" "$SSH_PORT"
+
+        prompt_value "ACME registration email" ""
+        ACME_EMAIL="$REPLY"; validate_email "$ACME_EMAIL"
+
+        prompt_value "Direct domain (e.g. b.example.com)" ""
+        DIRECT_DOMAIN="$REPLY"; validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
+
+        prompt_value "CDN origin domain (e.g. a.example.com)" ""
+        CDN_DOMAIN="$REPLY"; validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
+
+        DEFAULT_XHTTP=$(generate_random_path 32)
+        prompt_value "XHTTP location path" "$DEFAULT_XHTTP"
+        XHTTP_PATH="$REPLY"; validate_path "XHTTP_PATH" "$XHTTP_PATH"
+
+        DEFAULT_CLIPROXY=$(generate_random_path 32)
+        prompt_value "CLIProxyAPI location path" "$DEFAULT_CLIPROXY"
+        CLIPROXY_PATH="$REPLY"; validate_path "CLIPROXY_PATH" "$CLIPROXY_PATH"
+
+        DEFAULT_XUI_PATH=$(generate_random_path 32)
+        prompt_value "3x-ui panel location path" "$DEFAULT_XUI_PATH"
+        XUI_PANEL_PATH="$REPLY"; validate_path "XUI_PANEL_PATH" "$XUI_PANEL_PATH"
+
+        prompt_value "3x-ui panel listen port" "54321"
+        XUI_PANEL_PORT="$REPLY"; validate_port "XUI_PANEL_PORT" "$XUI_PANEL_PORT"
+
+        prompt_value "Upstream disguise website domain" "quarkus.io"
+        BACKEND_WEB="$REPLY"; validate_domain "BACKEND_WEB" "$BACKEND_WEB"
+
+        echo ""
+        show_config_summary
+        echo ""
+        read -r -p "Proceed? [y/N]: " CONFIRM
+        [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted by user."
+
+        save_config
+        msg_ok "Configuration saved to $CONFIG_FILE"
+    fi
 fi
 
 # Show resume status
@@ -710,26 +740,48 @@ fi
 ###############################################################################
 if ! is_done "step15"; then
     msg_step "15/$TOTAL_STEPS: Replace x-ui.db"
-    echo ""
-    msg_info "Upload your x-ui.db to the VPS from another terminal:"
-    echo ""
-    echo "  scp x-ui.db $USERNAME@<VPS_IP>:~/x-ui.db"
-    echo ""
-    msg_info "Waiting for /home/$USERNAME/x-ui.db to appear..."
 
-    while [ ! -f "/home/$USERNAME/x-ui.db" ]; do
-        sleep 2
+    # Search for x-ui.db in common locations
+    DB_SOURCE=""
+    for candidate in "/home/$USERNAME/x-ui.db" "/root/x-ui.db" /home/*/x-ui.db; do
+        if [ -f "$candidate" ]; then
+            DB_SOURCE="$candidate"
+            break
+        fi
     done
 
-    msg_ok "File detected: /home/$USERNAME/x-ui.db"
+    if [ -n "$DB_SOURCE" ]; then
+        msg_ok "Found x-ui.db at $DB_SOURCE"
+    else
+        echo ""
+        msg_info "Upload your x-ui.db to the VPS from another terminal:"
+        echo ""
+        echo "  scp x-ui.db root@<VPS_IP>:~/"
+        echo "  scp x-ui.db $USERNAME@<VPS_IP>:~/"
+        echo ""
+        msg_info "Waiting for x-ui.db to appear..."
+
+        while [ -z "$DB_SOURCE" ]; do
+            for candidate in "/home/$USERNAME/x-ui.db" "/root/x-ui.db" /home/*/x-ui.db; do
+                if [ -f "$candidate" ]; then
+                    DB_SOURCE="$candidate"
+                    break
+                fi
+            done
+            [ -z "$DB_SOURCE" ] && sleep 2
+        done
+
+        msg_ok "File detected: $DB_SOURCE"
+    fi
+
     echo ""
     msg_warn "Make sure the file transfer is FULLY COMPLETE before continuing."
-    msg_info "File size: $(stat -c%s "/home/$USERNAME/x-ui.db" 2>/dev/null || echo unknown) bytes"
+    msg_info "File size: $(stat -c%s "$DB_SOURCE" 2>/dev/null || echo unknown) bytes"
     echo ""
     read -r -p "Is the upload finished? Press Enter to continue (or Ctrl+C to abort)..."
 
     systemctl stop x-ui
-    cp "/home/$USERNAME/x-ui.db" /etc/x-ui/x-ui.db
+    cp "$DB_SOURCE" /etc/x-ui/x-ui.db
     /usr/local/x-ui/x-ui migrate
     systemctl start x-ui
     msg_ok "x-ui.db replaced, migrated, and x-ui restarted"
