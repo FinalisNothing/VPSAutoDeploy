@@ -163,8 +163,9 @@ ufw default deny incoming
 ufw allow proto tcp from 0.0.0.0/0 to any port "$SSH_PORT"
 ufw allow proto tcp from 0.0.0.0/0 to any port 80
 ufw allow proto tcp from 0.0.0.0/0 to any port 443
+ufw allow proto udp from 0.0.0.0/0 to any port 443
 ufw --force enable
-msg_ok "UFW enabled: SSH($SSH_PORT)/80/443 allowed, IPv4 only"
+msg_ok "UFW enabled: SSH($SSH_PORT)/80/443(tcp+udp) allowed, IPv4 only"
 
 ###############################################################################
 # Step 5: Deploy custom-built Nginx
