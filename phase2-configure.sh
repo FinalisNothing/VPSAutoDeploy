@@ -772,9 +772,9 @@ if ! is_done "step15"; then
     else
         echo ""
         msg_info "Upload your x-ui.db to the VPS from another terminal:"
+        msg_info "(Note: root password login is disabled; use the $USERNAME account)"
         echo ""
-        echo "  scp x-ui.db root@<VPS_IP>:~/"
-        echo "  scp x-ui.db $USERNAME@<VPS_IP>:~/"
+        echo "  scp -P $SSH_PORT x-ui.db $USERNAME@<VPS_IP>:~/"
         echo ""
         msg_info "Waiting for x-ui.db to appear..."
 
@@ -814,7 +814,11 @@ if ! is_done "step16"; then
     msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI"
     loginctl enable-linger "$USERNAME"
     sudo -u "$USERNAME" bash -c 'curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash'
-    msg_ok "CLIProxyAPI installed"
+    # Installer creates the service file but doesn't enable/start it
+    USER_UID=$(id -u "$USERNAME")
+    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user enable cliproxyapi.service
+    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user start cliproxyapi.service
+    msg_ok "CLIProxyAPI installed and service started"
     mark_done "step16"
 else
     msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI — SKIPPED (done)"
