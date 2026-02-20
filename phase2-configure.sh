@@ -64,7 +64,13 @@ if [ "${1:-}" = "--status" ]; then
 
     for svc in ssh ufw nginx x-ui fail2ban; do
         printf "  %-14s " "$svc:"
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        if [ "$svc" = "ufw" ]; then
+            if ufw status 2>/dev/null | grep -q "Status: active"; then
+                printf "${GREEN}active${NC}\n"
+            else
+                printf "${RED}inactive${NC}\n"
+            fi
+        elif systemctl is-active --quiet "$svc" 2>/dev/null; then
             printf "${GREEN}active${NC}\n"
         elif systemctl is-enabled --quiet "$svc" 2>/dev/null; then
             printf "${YELLOW}enabled but stopped${NC}\n"
@@ -88,16 +94,18 @@ if [ "${1:-}" = "--status" ]; then
 
     # jemalloc check
     msg_info "jemalloc injection:"
-    for proc in nginx x-ui cliproxyapi; do
-        PID=$(pgrep -x "$proc" -o 2>/dev/null || true)
+    for proc in nginx x-ui cli-proxy-api; do
+        DISPLAY_NAME="$proc"
+        [ "$proc" = "cli-proxy-api" ] && DISPLAY_NAME="cliproxyapi"
+        PID=$(pgrep -x "$proc" -o 2>/dev/null || pgrep -f "$proc" -o 2>/dev/null || true)
         if [ -n "$PID" ]; then
             if grep -q libjemalloc "/proc/$PID/maps" 2>/dev/null; then
-                printf "  %-14s ${GREEN}jemalloc loaded${NC} (PID %s)\n" "$proc:" "$PID"
+                printf "  %-14s ${GREEN}jemalloc loaded${NC} (PID %s)\n" "$DISPLAY_NAME:" "$PID"
             else
-                printf "  %-14s ${YELLOW}no jemalloc${NC} (PID %s)\n" "$proc:" "$PID"
+                printf "  %-14s ${YELLOW}no jemalloc${NC} (PID %s)\n" "$DISPLAY_NAME:" "$PID"
             fi
         else
-            printf "  %-14s ${RED}not running${NC}\n" "$proc:"
+            printf "  %-14s ${RED}not running${NC}\n" "$DISPLAY_NAME:"
         fi
     done
 
@@ -653,8 +661,8 @@ if ! is_done "step17"; then
     echo "LD_PRELOAD=$JEMALLOC_PATH" > /etc/default/x-ui
     systemctl daemon-reload
     systemctl enable x-ui
-    systemctl start x-ui
-    msg_ok "3x-ui started with jemalloc"
+    systemctl restart x-ui
+    msg_ok "3x-ui restarted with jemalloc"
     mark_done "step17"
 else
     msg_step "17/20: Enable jemalloc for 3x-ui — SKIPPED (done)"
