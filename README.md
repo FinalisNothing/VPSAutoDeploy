@@ -15,11 +15,11 @@ bash phase0-reinstall.sh
 
 ### Phase 1: Kernel Replacement (`phase1-kernel.sh`)
 
-Run on the **freshly reinstalled system**. Updates packages and replaces the kernel with a BBR v3 build.
+Run on the **freshly reinstalled system**. Updates packages, installs a BBR v3 kernel, and lets you choose a queue discipline (fq/fq_codel/fq_pie/cake).
 
 ```bash
 bash phase1-kernel.sh
-# VPS reboots automatically
+# Installs kernel → prompts for queue algorithm → asks to reboot
 ```
 
 ### Phase 2: Main Configuration (`phase2-configure.sh`)
@@ -52,13 +52,23 @@ bash phase2-configure.sh
 
 # Or pre-fill config first (recommended for repeatability)
 bash phase2-configure.sh --generate-config
-nano /root/.vpsautodeploy.conf
+nano /root/vpsautodeploy.conf
 bash phase2-configure.sh
 
 # Other commands
-bash phase2-configure.sh --status   # Show all service status
-bash phase2-configure.sh --reset    # Restore backups, stop services
+bash phase2-configure.sh --status           # Show all service status
+bash phase2-configure.sh --reset            # Restore backups, stop services
+bash phase2-configure.sh --generate-config  # Generate config template
 ```
+
+The config file can also be edited locally and uploaded via SCP:
+```bash
+scp vpsautodeploy.conf root@<VPS_IP>:~/
+# or
+scp vpsautodeploy.conf <user>@<VPS_IP>:~/
+```
+
+The script auto-detects and loads config from `/root/` or any `/home/*/` directory.
 
 ## Repository Structure
 
@@ -91,7 +101,7 @@ VPSAutoDeploy/
 | External Script | Source | Our Handling | Change Risk |
 |---|---|---|---|
 | `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--password` parameter to bypass interaction | Parameter format may change |
-| BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | `echo "1\ny"` piped to stdin | Menu order may change |
+| BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | `echo "1\nn"` to install kernel without auto-reboot; queue algorithm configured via sysctl file | Menu order may change |
 | 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` call | Function name may be renamed |
 | 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` call | Same as above |
 | CLIProxyAPI installer | [brokechubb/cliproxyapi-installer](https://github.com/brokechubb/cliproxyapi-installer) | Direct execution (zero interaction) | Service file format may change |
@@ -124,7 +134,9 @@ The installer preserves existing `config.yaml` via automatic backup/restore.
 ## Verification Checklist
 
 - [ ] phase0: DD reinstall successful, SSH login works
-- [ ] phase1: `uname -r` shows BBR v3 kernel, `sysctl net.ipv4.tcp_congestion_control` shows bbr
+- [ ] phase1: `uname -r` shows BBR v3 kernel
+- [ ] phase1: `sysctl net.ipv4.tcp_congestion_control` shows `bbr`
+- [ ] phase1: `sysctl net.core.default_qdisc` shows chosen algorithm (fq/fq_codel/fq_pie/cake)
 - [ ] virtio_balloon: `lsmod | grep balloon` returns empty
 - [ ] User: new user can `sudo`
 - [ ] SSH: custom port works
@@ -137,3 +149,13 @@ The installer preserves existing `config.yaml` via automatic backup/restore.
 - [ ] CLIProxyAPI: endpoint accessible
 - [ ] jemalloc: `grep libjemalloc /proc/$(pgrep -x nginx -o)/maps` shows loaded
 - [ ] SSH key: key login works, password login rejected
+
+## State Files
+
+After deployment, these files exist on the VPS:
+
+| File | Purpose | Safe to delete? |
+|---|---|---|
+| `/root/vpsautodeploy.conf` | Saved configuration (passwords in cleartext) | Yes, after deployment is verified |
+| `/root/vpsautodeploy.state` | Completed step tracking | Yes, after deployment is verified |
+| `/root/vpsautodeploy.backup/` | Pre-modification config backups | Keep until confident |

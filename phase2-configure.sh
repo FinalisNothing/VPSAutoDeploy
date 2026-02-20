@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 require_root
 
 BACKUP_DIR="/root/vpsautodeploy.backup"
-TOTAL_STEPS=18
+TOTAL_STEPS=17
 
 ###############################################################################
 # Backup / restore helpers
@@ -58,41 +58,58 @@ if [ "${1:-}" = "--generate-config" ]; then
 # VPSAutoDeploy configuration file
 # Fill in all values below, then run: bash phase2-configure.sh
 # Lines starting with # are comments.
+#
+# Upload to VPS:  scp vpsautodeploy.conf root@<VPS_IP>:~/
+#            or:  scp vpsautodeploy.conf <user>@<VPS_IP>:~/
 
-# New Linux username (lowercase, letters/digits/underscore/hyphen)
+# ── Required fields (must fill in) ──────────────────────────────────
+
+# New Linux username
+# Format: lowercase letters, digits, underscore, hyphen; start with letter
+# Example: USERNAME=one
 USERNAME=
 
-# Password for the new user
+# Password for the new user (any non-empty string)
 USER_PASSWORD=
 
-# New root password
+# New root password (any non-empty string)
 ROOT_PASSWORD=
 
-# Custom SSH port (1024-65535)
-SSH_PORT=2222
+# Custom SSH port (range: 1024-65535, avoid common ports)
+# Example: SSH_PORT=48825
+SSH_PORT=
 
-# ACME registration email (for ZeroSSL certificate)
+# ACME registration email (for ZeroSSL certificate issuance)
+# Example: ACME_EMAIL=admin@example.com
 ACME_EMAIL=
 
-# Direct-connect domain (e.g. b.example.com, DNS A record → VPS IP)
+# Direct-connect domain (DNS A record pointing to VPS IP)
+# Example: DIRECT_DOMAIN=b.example.com
 DIRECT_DOMAIN=
 
-# CDN origin domain (e.g. a.example.com, Cloudflare proxied)
+# CDN origin domain (Cloudflare proxied, orange-cloud enabled)
+# Example: CDN_DOMAIN=a.example.com
 CDN_DOMAIN=
 
-# XHTTP location path (alphanumeric, auto-generated if empty)
+# ── Optional fields (leave empty for auto-generated random values) ──
+
+# XHTTP location path (letters, digits, underscore, hyphen only)
+# Leave empty to auto-generate a random 32-character string
 XHTTP_PATH=
 
-# CLIProxyAPI location path (alphanumeric, auto-generated if empty)
+# CLIProxyAPI location path (same format as above)
 CLIPROXY_PATH=
 
-# 3x-ui panel location path (alphanumeric, auto-generated if empty)
+# 3x-ui panel location path (same format as above)
 XUI_PANEL_PATH=
 
-# 3x-ui panel listen port (1024-65535)
+# ── Fields with defaults (change if needed) ─────────────────────────
+
+# 3x-ui panel listen port (range: 1024-65535)
 XUI_PANEL_PORT=54321
 
-# Upstream disguise website domain (e.g. quarkus.io)
+# Upstream disguise website domain (used as reverse proxy backend)
+# Should be a real, publicly accessible HTTPS website
 BACKEND_WEB=quarkus.io
 TEMPLATE
     chmod 600 "$TARGET"
@@ -399,57 +416,10 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 ###############################################################################
-# Step 1: Configure BBR queue algorithm
+# Step 1: Disable virtio_balloon
 ###############################################################################
 if ! is_done "step1"; then
-    msg_step "1/$TOTAL_STEPS: Configure BBR queue algorithm"
-
-    # Check if BBR is already active
-    CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-    CURRENT_QD=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")
-    msg_info "Current: congestion=$CURRENT_CC, qdisc=$CURRENT_QD"
-
-    if [ "$CURRENT_CC" = "bbr" ]; then
-        msg_info "BBR already active. Reconfigure queue algorithm?"
-        read -r -p "Reconfigure? [y/N]: " RECONF
-        if [[ ! "$RECONF" =~ ^[Yy]$ ]]; then
-            msg_ok "Keeping current config: BBR + $CURRENT_QD"
-            mark_done "step1"
-        fi
-    fi
-
-    if ! is_done "step1"; then
-        # Download and run the BBR script interactively for queue selection
-        msg_info "Launching BBR management script — choose option 4/5/6/7:"
-        echo ""
-        echo "  4. BBR + FQ          (recommended for BBR, Google's default)"
-        echo "  5. BBR + FQ_CODEL    (good general-purpose)"
-        echo "  6. BBR + FQ_PIE"
-        echo "  7. BBR + CAKE        (good for bufferbloat)"
-        echo ""
-        curl -fsSLo /tmp/bbr-install.sh https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh \
-            || die "Failed to download BBR script"
-        bash /tmp/bbr-install.sh
-
-        # Verify result
-        CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-        CURRENT_QD=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")
-        if [ "$CURRENT_CC" = "bbr" ]; then
-            msg_ok "BBR + $CURRENT_QD configured"
-        else
-            msg_warn "BBR not active (congestion=$CURRENT_CC). You can reconfigure later."
-        fi
-        mark_done "step1"
-    fi
-else
-    msg_step "1/$TOTAL_STEPS: Configure BBR queue algorithm — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 2: Disable virtio_balloon
-###############################################################################
-if ! is_done "step2"; then
-    msg_step "2/$TOTAL_STEPS: Disable virtio_balloon"
+    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon"
     if lsmod | grep -q balloon; then
         echo "blacklist virtio_balloon" | tee /etc/modprobe.d/blacklist-balloon.conf
         update-initramfs -u
@@ -457,16 +427,16 @@ if ! is_done "step2"; then
     else
         msg_info "virtio_balloon not loaded, skipping"
     fi
-    mark_done "step2"
+    mark_done "step1"
 else
-    msg_step "2/$TOTAL_STEPS: Disable virtio_balloon — SKIPPED (done)"
+    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 4: Create user + set passwords
 ###############################################################################
-if ! is_done "step3"; then
-    msg_step "3/$TOTAL_STEPS: Create user and set passwords"
+if ! is_done "step2"; then
+    msg_step "2/$TOTAL_STEPS: Create user and set passwords"
     if id "$USERNAME" &>/dev/null; then
         msg_info "User $USERNAME already exists, updating passwords"
     else
@@ -475,16 +445,16 @@ if ! is_done "step3"; then
     echo "$USERNAME:$USER_PASSWORD" | chpasswd
     echo "root:$ROOT_PASSWORD" | chpasswd
     msg_ok "User $USERNAME ready, passwords set"
-    mark_done "step3"
+    mark_done "step2"
 else
-    msg_step "3/$TOTAL_STEPS: Create user and set passwords — SKIPPED (done)"
+    msg_step "2/$TOTAL_STEPS: Create user and set passwords — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 4: SSH initial hardening
 ###############################################################################
-if ! is_done "step4"; then
-    msg_step "4/$TOTAL_STEPS: SSH initial hardening"
+if ! is_done "step3"; then
+    msg_step "3/$TOTAL_STEPS: SSH initial hardening"
     SSHD_CONFIG="/etc/ssh/sshd_config"
     SSHD_CONF_DIR="/etc/ssh/sshd_config.d"
     backup_file "$SSHD_CONFIG"
@@ -513,16 +483,16 @@ if ! is_done "step4"; then
 
     systemctl restart ssh
     msg_ok "SSH configured: Port=$SSH_PORT, PermitRootLogin=prohibit-password"
-    mark_done "step4"
+    mark_done "step3"
 else
-    msg_step "4/$TOTAL_STEPS: SSH initial hardening — SKIPPED (done)"
+    msg_step "3/$TOTAL_STEPS: SSH initial hardening — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 5: UFW firewall
 ###############################################################################
-if ! is_done "step5"; then
-    msg_step "5/$TOTAL_STEPS: Configure UFW firewall"
+if ! is_done "step4"; then
+    msg_step "4/$TOTAL_STEPS: Configure UFW firewall"
     apt install -y ufw
     backup_file "/etc/default/ufw"
     sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
@@ -534,16 +504,16 @@ if ! is_done "step5"; then
     ufw allow proto udp from 0.0.0.0/0 to any port 443
     ufw --force enable
     msg_ok "UFW enabled: SSH($SSH_PORT)/80/443(tcp+udp) allowed, IPv4 only"
-    mark_done "step5"
+    mark_done "step4"
 else
-    msg_step "5/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
+    msg_step "4/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 6: Deploy custom-built Nginx
 ###############################################################################
-if ! is_done "step6"; then
-    msg_step "6/$TOTAL_STEPS: Deploy custom-built Nginx"
+if ! is_done "step5"; then
+    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx"
     NGINX_URL="https://github.com/FinalisNothing/nginx-build/releases/latest/download/nginx-root.tar.gz"
     msg_info "Downloading nginx from GitHub Release..."
     curl -fLo /tmp/nginx-root.tar.gz "$NGINX_URL" \
@@ -559,20 +529,20 @@ if ! is_done "step6"; then
     chown -R "$USERNAME":nogroup /nginx/acme_challenge
     chmod 750 /nginx/acme_challenge/.well-known/acme-challenge
     msg_ok "Nginx permissions configured"
-    mark_done "step6"
+    mark_done "step5"
 else
-    msg_step "6/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
+    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 7: Install jemalloc (for nginx only — Go binaries ignore LD_PRELOAD)
 ###############################################################################
-if ! is_done "step7"; then
-    msg_step "7/$TOTAL_STEPS: Install jemalloc"
+if ! is_done "step6"; then
+    msg_step "6/$TOTAL_STEPS: Install jemalloc"
     apt install -y libjemalloc2
-    mark_done "step7"
+    mark_done "step6"
 else
-    msg_step "7/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
+    msg_step "6/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
 fi
 # Always resolve path (needed by step 7)
 JEMALLOC_PATH=$(find /usr/lib -name "libjemalloc.so*" | head -1)
@@ -582,24 +552,24 @@ msg_ok "jemalloc at $JEMALLOC_PATH"
 ###############################################################################
 # Step 8: Create nginx.service (with jemalloc LD_PRELOAD)
 ###############################################################################
-if ! is_done "step8"; then
-    msg_step "8/$TOTAL_STEPS: Create nginx systemd service"
+if ! is_done "step7"; then
+    msg_step "7/$TOTAL_STEPS: Create nginx systemd service"
     render_template "$SCRIPT_DIR/templates/nginx.service" \
         /etc/systemd/system/nginx.service \
         "JEMALLOC_PATH=$JEMALLOC_PATH"
     systemctl daemon-reload
     systemctl enable nginx
     msg_ok "nginx.service installed and enabled"
-    mark_done "step8"
+    mark_done "step7"
 else
-    msg_step "8/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
+    msg_step "7/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 9: ACME certificate
 ###############################################################################
-if ! is_done "step9"; then
-    msg_step "9/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
+if ! is_done "step8"; then
+    msg_step "8/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
 
     # Check if cert already exists (e.g., from a previous partial run)
     CERT_FILE="/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/fullchain.pem"
@@ -633,16 +603,16 @@ if ! is_done "step9"; then
     fi
 
     msg_ok "ACME certificate ready for $DIRECT_DOMAIN"
-    mark_done "step9"
+    mark_done "step8"
 else
-    msg_step "9/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
+    msg_step "8/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 10: Cloudflare origin certificate (user paste)
 ###############################################################################
-if ! is_done "step10"; then
-    msg_step "10/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
+if ! is_done "step9"; then
+    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
     mkdir -p "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
 
     echo ""
@@ -668,32 +638,32 @@ if ! is_done "step10"; then
     printf '%s' "$CF_KEY" > "/home/$USERNAME/xray_cert/$CDN_DOMAIN/privkey.pem"
 
     msg_ok "Cloudflare origin cert saved for $CDN_DOMAIN"
-    mark_done "step10"
+    mark_done "step9"
 else
-    msg_step "10/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
+    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 11: Certificate directory permissions
 ###############################################################################
-if ! is_done "step11"; then
-    msg_step "11/$TOTAL_STEPS: Set certificate directory permissions"
+if ! is_done "step10"; then
+    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions"
     grep -qF "umask 0077" /root/.bashrc || echo "umask 0077" >> /root/.bashrc
     chmod 700 "/home/$USERNAME/xray_cert"
     chmod 700 "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN"
     chmod 700 "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
     chmod 600 "/home/$USERNAME/xray_cert"/*/*.pem
     msg_ok "Certificate permissions locked down"
-    mark_done "step11"
+    mark_done "step10"
 else
-    msg_step "11/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
+    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 12: Generate cloudflare-ips.geo
 ###############################################################################
-if ! is_done "step12"; then
-    msg_step "12/$TOTAL_STEPS: Generate cloudflare-ips.geo"
+if ! is_done "step11"; then
+    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo"
     CF_V4_URL="https://www.cloudflare.com/ips-v4"
     CF_V6_URL="https://www.cloudflare.com/ips-v6"
     NGINX_GEO="/nginx/conf/cloudflare-ips.geo"
@@ -716,16 +686,16 @@ if ! is_done "step12"; then
     chmod 644 "$NGINX_GEO"
     rm -rf "$CF_TMPDIR"
     msg_ok "cloudflare-ips.geo generated"
-    mark_done "step12"
+    mark_done "step11"
 else
-    msg_step "12/$TOTAL_STEPS: Generate cloudflare-ips.geo — SKIPPED (done)"
+    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 13: Deploy final nginx.conf
 ###############################################################################
-if ! is_done "step13"; then
-    msg_step "13/$TOTAL_STEPS: Deploy final nginx.conf"
+if ! is_done "step12"; then
+    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf"
     systemctl stop nginx || true
     backup_file "/nginx/conf/nginx.conf"
 
@@ -745,16 +715,16 @@ if ! is_done "step13"; then
     /nginx/sbin/nginx -t || die "nginx config test failed"
     systemctl start nginx
     msg_ok "Final nginx.conf deployed and nginx restarted"
-    mark_done "step13"
+    mark_done "step12"
 else
-    msg_step "13/$TOTAL_STEPS: Deploy final nginx.conf — SKIPPED (done)"
+    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 14: Deploy Fail2ban
 ###############################################################################
-if ! is_done "step14"; then
-    msg_step "14/$TOTAL_STEPS: Deploy Fail2ban"
+if ! is_done "step13"; then
+    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban"
     FAIL2BAN_DIR="$SCRIPT_DIR/fail2ban"
     if [ ! -d "$FAIL2BAN_DIR" ]; then
         msg_info "Cloning fail2ban config from repository..."
@@ -763,30 +733,30 @@ if ! is_done "step14"; then
     fi
     SSH_PORT="$SSH_PORT" bash "$FAIL2BAN_DIR/deploy.sh"
     msg_ok "Fail2ban deployed"
-    mark_done "step14"
+    mark_done "step13"
 else
-    msg_step "14/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
+    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 15: Install 3x-ui
 ###############################################################################
-if ! is_done "step15"; then
-    msg_step "15/$TOTAL_STEPS: Install 3x-ui"
+if ! is_done "step14"; then
+    msg_step "14/$TOTAL_STEPS: Install 3x-ui"
     curl -Ls -o /tmp/x-ui-install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
     sed -i 's/^[[:space:]]*config_after_install$/#config_after_install/' /tmp/x-ui-install.sh
     bash /tmp/x-ui-install.sh
     msg_ok "3x-ui installed (interactive config skipped)"
-    mark_done "step15"
+    mark_done "step14"
 else
-    msg_step "15/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
+    msg_step "14/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 16: Replace x-ui.db
 ###############################################################################
-if ! is_done "step16"; then
-    msg_step "16/$TOTAL_STEPS: Replace x-ui.db"
+if ! is_done "step15"; then
+    msg_step "15/$TOTAL_STEPS: Replace x-ui.db"
 
     # Search for x-ui.db in common locations
     DB_SOURCE=""
@@ -832,29 +802,29 @@ if ! is_done "step16"; then
     /usr/local/x-ui/x-ui migrate
     systemctl start x-ui
     msg_ok "x-ui.db replaced, migrated, and x-ui restarted"
-    mark_done "step16"
+    mark_done "step15"
 else
-    msg_step "16/$TOTAL_STEPS: Replace x-ui.db — SKIPPED (done)"
+    msg_step "15/$TOTAL_STEPS: Replace x-ui.db — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 17: Install CLIProxyAPI
 ###############################################################################
-if ! is_done "step17"; then
-    msg_step "17/$TOTAL_STEPS: Install CLIProxyAPI"
+if ! is_done "step16"; then
+    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI"
     loginctl enable-linger "$USERNAME"
     sudo -u "$USERNAME" bash -c 'curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash'
     msg_ok "CLIProxyAPI installed"
-    mark_done "step17"
+    mark_done "step16"
 else
-    msg_step "17/$TOTAL_STEPS: Install CLIProxyAPI — SKIPPED (done)"
+    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 18: SSH Key authentication
 ###############################################################################
-if ! is_done "step18"; then
-    msg_step "18/$TOTAL_STEPS: SSH Key authentication"
+if ! is_done "step17"; then
+    msg_step "17/$TOTAL_STEPS: SSH Key authentication"
     echo ""
     msg_info "On your LOCAL machine (PowerShell), generate an SSH key if you haven't:"
     echo ""
@@ -894,9 +864,9 @@ if ! is_done "step18"; then
 
     systemctl restart ssh
     msg_ok "SSH key authentication configured, password login disabled"
-    mark_done "step18"
+    mark_done "step17"
 else
-    msg_step "18/$TOTAL_STEPS: SSH Key authentication — SKIPPED (done)"
+    msg_step "17/$TOTAL_STEPS: SSH Key authentication — SKIPPED (done)"
 fi
 
 ###############################################################################
