@@ -27,16 +27,6 @@ curl -fsSLo /tmp/bbr-install.sh https://raw.githubusercontent.com/byJoey/Actions
     || die "Failed to download BBR v3 installer"
 
 msg_info "Running installer (option 1 = install latest kernel, y = confirm reboot)..."
-
-# Write BBR + FQ sysctl config BEFORE reboot so it takes effect with the new kernel.
-# FQ (Fair Queue) is the standard qdisc recommended for BBR by Google.
-msg_info "Pre-configuring BBR + FQ for the new kernel..."
-cat > /etc/sysctl.d/99-bbr.conf << 'SYSCTL'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-SYSCTL
-msg_ok "BBR + FQ will activate automatically after reboot"
-
 echo -e "1\ny" | bash /tmp/bbr-install.sh
 
 # If we reach here, the script didn't trigger a reboot automatically
@@ -50,7 +40,5 @@ msg_info "If it doesn't, run 'reboot' manually."
 echo ""
 msg_info "After reboot, verify with:"
 echo "  uname -r                                    # should show bbrv3 kernel"
-echo "  sysctl net.ipv4.tcp_congestion_control      # should show bbr"
-echo "  sysctl net.core.default_qdisc               # should show fq"
 echo ""
-msg_info "Then run phase2-configure.sh"
+msg_info "Then run phase2-configure.sh (step 1 will configure BBR queue algorithm)"
