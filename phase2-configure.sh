@@ -631,8 +631,23 @@ if ! is_done "step15"; then
         sleep 2
     done
 
+    # Wait for file transfer to complete (size stable for 3 seconds)
+    msg_info "File detected, waiting for transfer to complete..."
+    PREV_SIZE=-1
+    while true; do
+        CURR_SIZE=$(stat -c%s "/home/$USERNAME/x-ui.db" 2>/dev/null || echo 0)
+        if [ "$CURR_SIZE" -gt 0 ] && [ "$CURR_SIZE" = "$PREV_SIZE" ]; then
+            break
+        fi
+        PREV_SIZE="$CURR_SIZE"
+        sleep 3
+    done
+    msg_ok "File transfer complete ($(( CURR_SIZE / 1024 )) KB)"
+
+    systemctl stop x-ui
     cp "/home/$USERNAME/x-ui.db" /etc/x-ui/x-ui.db
     /usr/local/x-ui/x-ui migrate
+    systemctl start x-ui
     msg_ok "x-ui.db replaced and migrated"
     mark_done "step15"
 else
