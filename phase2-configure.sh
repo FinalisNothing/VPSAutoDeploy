@@ -3,9 +3,10 @@
 # Run this after BBR v3 kernel reboot (phase1).
 #
 # Supports:
-#   bash phase2-configure.sh           # Normal run (with resume)
-#   bash phase2-configure.sh --status  # Show service status
-#   bash phase2-configure.sh --reset   # Restore backups, stop services
+#   bash phase2-configure.sh                    # Normal run (with resume)
+#   bash phase2-configure.sh --status           # Show service status
+#   bash phase2-configure.sh --reset            # Restore backups, stop services
+#   bash phase2-configure.sh --generate-config  # Generate config template file
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -13,6 +14,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 require_root
 
 BACKUP_DIR="/root/.vpsautodeploy.backup"
+TOTAL_STEPS=17
 
 ###############################################################################
 # Backup / restore helpers
@@ -43,6 +45,66 @@ restore_file() {
 }
 
 ###############################################################################
+# --generate-config: output a template config file for pre-filling
+###############################################################################
+if [ "${1:-}" = "--generate-config" ]; then
+    TARGET="${2:-$CONFIG_FILE}"
+    if [ -f "$TARGET" ]; then
+        msg_warn "Config file already exists at $TARGET"
+        read -r -p "Overwrite? [y/N]: " CONFIRM
+        [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted."
+    fi
+    cat > "$TARGET" << 'TEMPLATE'
+# VPSAutoDeploy configuration file
+# Fill in all values below, then run: bash phase2-configure.sh
+# Lines starting with # are comments.
+
+# New Linux username (lowercase, letters/digits/underscore/hyphen)
+USERNAME=
+
+# Password for the new user
+USER_PASSWORD=
+
+# New root password
+ROOT_PASSWORD=
+
+# Custom SSH port (1024-65535)
+SSH_PORT=2222
+
+# ACME registration email (for ZeroSSL certificate)
+ACME_EMAIL=
+
+# Direct-connect domain (e.g. b.example.com, DNS A record → VPS IP)
+DIRECT_DOMAIN=
+
+# CDN origin domain (e.g. a.example.com, Cloudflare proxied)
+CDN_DOMAIN=
+
+# XHTTP location path (alphanumeric, auto-generated if empty)
+XHTTP_PATH=
+
+# CLIProxyAPI location path (alphanumeric, auto-generated if empty)
+CLIPROXY_PATH=
+
+# 3x-ui panel location path (alphanumeric, auto-generated if empty)
+XUI_PANEL_PATH=
+
+# 3x-ui panel listen port (1024-65535)
+XUI_PANEL_PORT=54321
+
+# Upstream disguise website domain (e.g. quarkus.io)
+BACKEND_WEB=quarkus.io
+TEMPLATE
+    chmod 600 "$TARGET"
+    msg_ok "Config template generated at $TARGET"
+    msg_info "Edit the file, fill in all required values, then run:"
+    echo ""
+    echo "  bash phase2-configure.sh"
+    echo ""
+    exit 0
+fi
+
+###############################################################################
 # --status: show all service states
 ###############################################################################
 if [ "${1:-}" = "--status" ]; then
@@ -57,7 +119,7 @@ if [ "${1:-}" = "--status" ]; then
         echo "  Config: $CONFIG_FILE"
         echo "  State:  $STATE_FILE"
         if [ -f "$STATE_FILE" ]; then
-            echo "  Steps completed: $(wc -l < "$STATE_FILE")/20"
+            echo "  Steps completed: $(wc -l < "$STATE_FILE")/$TOTAL_STEPS"
         fi
         echo ""
     fi
@@ -92,22 +154,18 @@ if [ "${1:-}" = "--status" ]; then
 
     echo ""
 
-    # jemalloc check
-    msg_info "jemalloc injection:"
-    for proc in nginx x-ui cli-proxy-api; do
-        DISPLAY_NAME="$proc"
-        [ "$proc" = "cli-proxy-api" ] && DISPLAY_NAME="cliproxyapi"
-        PID=$(pgrep -x "$proc" -o 2>/dev/null || pgrep -f "$proc" -o 2>/dev/null || true)
-        if [ -n "$PID" ]; then
-            if grep -q libjemalloc "/proc/$PID/maps" 2>/dev/null; then
-                printf "  %-14s ${GREEN}jemalloc loaded${NC} (PID %s)\n" "$DISPLAY_NAME:" "$PID"
-            else
-                printf "  %-14s ${YELLOW}no jemalloc${NC} (PID %s)\n" "$DISPLAY_NAME:" "$PID"
-            fi
+    # jemalloc check (only nginx — Go binaries are statically linked, LD_PRELOAD has no effect)
+    msg_info "jemalloc (nginx only — Go programs ignore LD_PRELOAD):"
+    PID=$(pgrep -x nginx -o 2>/dev/null || true)
+    if [ -n "$PID" ]; then
+        if grep -q libjemalloc "/proc/$PID/maps" 2>/dev/null; then
+            printf "  %-14s ${GREEN}jemalloc loaded${NC} (PID %s)\n" "nginx:" "$PID"
         else
-            printf "  %-14s ${RED}not running${NC}\n" "$DISPLAY_NAME:"
+            printf "  %-14s ${YELLOW}no jemalloc${NC} (PID %s)\n" "nginx:" "$PID"
         fi
-    done
+    else
+        printf "  %-14s ${RED}not running${NC}\n" "nginx:"
+    fi
 
     echo ""
 
@@ -185,12 +243,37 @@ echo "=========================================="
 echo ""
 
 ###############################################################################
-# User input — load saved config or collect interactively
+# User input — load saved/pre-filled config or collect interactively
 ###############################################################################
 
-if load_config; then
-    msg_ok "Loaded saved configuration from $CONFIG_FILE"
-    echo ""
+# validate_config: check all required fields are present and valid
+validate_config() {
+    validate_nonempty "USERNAME" "$USERNAME"
+    validate_username "$USERNAME"
+    validate_nonempty "USER_PASSWORD" "$USER_PASSWORD"
+    validate_nonempty "ROOT_PASSWORD" "$ROOT_PASSWORD"
+    validate_port "SSH_PORT" "$SSH_PORT"
+    validate_email "$ACME_EMAIL"
+    validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
+    validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
+    validate_domain "BACKEND_WEB" "$BACKEND_WEB"
+    validate_port "XUI_PANEL_PORT" "$XUI_PANEL_PORT"
+    # Paths: auto-generate if empty, then validate
+    if [ -z "${XHTTP_PATH:-}" ]; then
+        XHTTP_PATH=$(generate_random_path 32)
+    fi
+    validate_path "XHTTP_PATH" "$XHTTP_PATH"
+    if [ -z "${CLIPROXY_PATH:-}" ]; then
+        CLIPROXY_PATH=$(generate_random_path 32)
+    fi
+    validate_path "CLIPROXY_PATH" "$CLIPROXY_PATH"
+    if [ -z "${XUI_PANEL_PATH:-}" ]; then
+        XUI_PANEL_PATH=$(generate_random_path 32)
+    fi
+    validate_path "XUI_PANEL_PATH" "$XUI_PANEL_PATH"
+}
+
+show_config_summary() {
     msg_info "Configuration summary:"
     echo "  USERNAME       = $USERNAME"
     echo "  SSH_PORT       = $SSH_PORT"
@@ -202,15 +285,27 @@ if load_config; then
     echo "  XUI_PANEL_PATH = $XUI_PANEL_PATH"
     echo "  XUI_PANEL_PORT = $XUI_PANEL_PORT"
     echo "  BACKEND_WEB    = $BACKEND_WEB"
+}
+
+if load_config; then
+    # Strip comments and empty lines from pre-filled template
+    # (load_config sources the file, comments are naturally ignored by bash)
+    msg_ok "Loaded configuration from $CONFIG_FILE"
     echo ""
-    read -r -p "Use saved config? [Y/n]: " USE_SAVED
+    show_config_summary
+    echo ""
+    read -r -p "Use this config? [Y/n]: " USE_SAVED
     if [[ "$USE_SAVED" =~ ^[Nn]$ ]]; then
         rm -f "$CONFIG_FILE" "$STATE_FILE"
         msg_info "Cleared saved config and state. Starting fresh."
         exec "$0" "$@"
     fi
+    validate_config
+    # Re-save to normalize (auto-generated paths, stripped comments)
+    save_config
 else
-    msg_info "Collecting configuration parameters..."
+    msg_info "No config file found. Collecting parameters interactively..."
+    msg_info "(Tip: run with --generate-config to create a template file instead)"
     echo ""
 
     prompt_value "New Linux username" ""
@@ -253,17 +348,7 @@ else
     BACKEND_WEB="$REPLY"; validate_domain "BACKEND_WEB" "$BACKEND_WEB"
 
     echo ""
-    msg_info "Configuration summary:"
-    echo "  USERNAME       = $USERNAME"
-    echo "  SSH_PORT       = $SSH_PORT"
-    echo "  ACME_EMAIL     = $ACME_EMAIL"
-    echo "  DIRECT_DOMAIN  = $DIRECT_DOMAIN"
-    echo "  CDN_DOMAIN     = $CDN_DOMAIN"
-    echo "  XHTTP_PATH     = $XHTTP_PATH"
-    echo "  CLIPROXY_PATH  = $CLIPROXY_PATH"
-    echo "  XUI_PANEL_PATH = $XUI_PANEL_PATH"
-    echo "  XUI_PANEL_PORT = $XUI_PANEL_PORT"
-    echo "  BACKEND_WEB    = $BACKEND_WEB"
+    show_config_summary
     echo ""
     read -r -p "Proceed? [y/N]: " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted by user."
@@ -282,7 +367,7 @@ fi
 # Step 1: Disable virtio_balloon
 ###############################################################################
 if ! is_done "step1"; then
-    msg_step "1/20: Disable virtio_balloon"
+    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon"
     if lsmod | grep -q balloon; then
         echo "blacklist virtio_balloon" | tee /etc/modprobe.d/blacklist-balloon.conf
         update-initramfs -u
@@ -292,14 +377,14 @@ if ! is_done "step1"; then
     fi
     mark_done "step1"
 else
-    msg_step "1/20: Disable virtio_balloon — SKIPPED (done)"
+    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 2: Create user + set passwords
 ###############################################################################
 if ! is_done "step2"; then
-    msg_step "2/20: Create user and set passwords"
+    msg_step "2/$TOTAL_STEPS: Create user and set passwords"
     if id "$USERNAME" &>/dev/null; then
         msg_info "User $USERNAME already exists, updating passwords"
     else
@@ -310,14 +395,14 @@ if ! is_done "step2"; then
     msg_ok "User $USERNAME ready, passwords set"
     mark_done "step2"
 else
-    msg_step "2/20: Create user and set passwords — SKIPPED (done)"
+    msg_step "2/$TOTAL_STEPS: Create user and set passwords — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 3: SSH initial hardening
 ###############################################################################
 if ! is_done "step3"; then
-    msg_step "3/20: SSH initial hardening"
+    msg_step "3/$TOTAL_STEPS: SSH initial hardening"
     SSHD_CONFIG="/etc/ssh/sshd_config"
     SSHD_CONF_DIR="/etc/ssh/sshd_config.d"
     backup_file "$SSHD_CONFIG"
@@ -348,14 +433,14 @@ if ! is_done "step3"; then
     msg_ok "SSH configured: Port=$SSH_PORT, PermitRootLogin=prohibit-password"
     mark_done "step3"
 else
-    msg_step "3/20: SSH initial hardening — SKIPPED (done)"
+    msg_step "3/$TOTAL_STEPS: SSH initial hardening — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 4: UFW firewall
 ###############################################################################
 if ! is_done "step4"; then
-    msg_step "4/20: Configure UFW firewall"
+    msg_step "4/$TOTAL_STEPS: Configure UFW firewall"
     apt install -y ufw
     backup_file "/etc/default/ufw"
     sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
@@ -369,14 +454,14 @@ if ! is_done "step4"; then
     msg_ok "UFW enabled: SSH($SSH_PORT)/80/443(tcp+udp) allowed, IPv4 only"
     mark_done "step4"
 else
-    msg_step "4/20: Configure UFW firewall — SKIPPED (done)"
+    msg_step "4/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 5: Deploy custom-built Nginx
 ###############################################################################
 if ! is_done "step5"; then
-    msg_step "5/20: Deploy custom-built Nginx"
+    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx"
     NGINX_URL="https://github.com/FinalisNothing/nginx-build/releases/latest/download/nginx-root.tar.gz"
     msg_info "Downloading nginx from GitHub Release..."
     curl -fLo /tmp/nginx-root.tar.gz "$NGINX_URL" \
@@ -394,20 +479,20 @@ if ! is_done "step5"; then
     msg_ok "Nginx permissions configured"
     mark_done "step5"
 else
-    msg_step "5/20: Deploy custom-built Nginx — SKIPPED (done)"
+    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 6: Install jemalloc
+# Step 6: Install jemalloc (for nginx only — Go binaries ignore LD_PRELOAD)
 ###############################################################################
 if ! is_done "step6"; then
-    msg_step "6/20: Install jemalloc"
+    msg_step "6/$TOTAL_STEPS: Install jemalloc"
     apt install -y libjemalloc2
     mark_done "step6"
 else
-    msg_step "6/20: Install jemalloc — SKIPPED (done)"
+    msg_step "6/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
 fi
-# Always resolve path (needed by later steps)
+# Always resolve path (needed by step 7)
 JEMALLOC_PATH=$(find /usr/lib -name "libjemalloc.so*" | head -1)
 [ -n "$JEMALLOC_PATH" ] || die "Could not find libjemalloc.so"
 msg_ok "jemalloc at $JEMALLOC_PATH"
@@ -416,7 +501,7 @@ msg_ok "jemalloc at $JEMALLOC_PATH"
 # Step 7: Create nginx.service (with jemalloc LD_PRELOAD)
 ###############################################################################
 if ! is_done "step7"; then
-    msg_step "7/20: Create nginx systemd service"
+    msg_step "7/$TOTAL_STEPS: Create nginx systemd service"
     render_template "$SCRIPT_DIR/templates/nginx.service" \
         /etc/systemd/system/nginx.service \
         "JEMALLOC_PATH=$JEMALLOC_PATH"
@@ -425,14 +510,14 @@ if ! is_done "step7"; then
     msg_ok "nginx.service installed and enabled"
     mark_done "step7"
 else
-    msg_step "7/20: Create nginx systemd service — SKIPPED (done)"
+    msg_step "7/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 8: ACME certificate
 ###############################################################################
 if ! is_done "step8"; then
-    msg_step "8/20: ACME certificate for $DIRECT_DOMAIN"
+    msg_step "8/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
 
     # Check if cert already exists (e.g., from a previous partial run)
     CERT_FILE="/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/fullchain.pem"
@@ -468,14 +553,14 @@ if ! is_done "step8"; then
     msg_ok "ACME certificate ready for $DIRECT_DOMAIN"
     mark_done "step8"
 else
-    msg_step "8/20: ACME certificate — SKIPPED (done)"
+    msg_step "8/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 9: Cloudflare origin certificate (user paste)
 ###############################################################################
 if ! is_done "step9"; then
-    msg_step "9/20: Cloudflare origin certificate for $CDN_DOMAIN"
+    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
     mkdir -p "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
 
     echo ""
@@ -503,14 +588,14 @@ if ! is_done "step9"; then
     msg_ok "Cloudflare origin cert saved for $CDN_DOMAIN"
     mark_done "step9"
 else
-    msg_step "9/20: Cloudflare origin certificate — SKIPPED (done)"
+    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 10: Certificate directory permissions
 ###############################################################################
 if ! is_done "step10"; then
-    msg_step "10/20: Set certificate directory permissions"
+    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions"
     grep -qF "umask 0077" /root/.bashrc || echo "umask 0077" >> /root/.bashrc
     chmod 700 "/home/$USERNAME/xray_cert"
     chmod 700 "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN"
@@ -519,14 +604,14 @@ if ! is_done "step10"; then
     msg_ok "Certificate permissions locked down"
     mark_done "step10"
 else
-    msg_step "10/20: Set certificate directory permissions — SKIPPED (done)"
+    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 11: Generate cloudflare-ips.geo
 ###############################################################################
 if ! is_done "step11"; then
-    msg_step "11/20: Generate cloudflare-ips.geo"
+    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo"
     CF_V4_URL="https://www.cloudflare.com/ips-v4"
     CF_V6_URL="https://www.cloudflare.com/ips-v6"
     NGINX_GEO="/nginx/conf/cloudflare-ips.geo"
@@ -551,14 +636,14 @@ if ! is_done "step11"; then
     msg_ok "cloudflare-ips.geo generated"
     mark_done "step11"
 else
-    msg_step "11/20: Generate cloudflare-ips.geo — SKIPPED (done)"
+    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 12: Deploy final nginx.conf
 ###############################################################################
 if ! is_done "step12"; then
-    msg_step "12/20: Deploy final nginx.conf"
+    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf"
     systemctl stop nginx || true
     backup_file "/nginx/conf/nginx.conf"
 
@@ -580,14 +665,14 @@ if ! is_done "step12"; then
     msg_ok "Final nginx.conf deployed and nginx restarted"
     mark_done "step12"
 else
-    msg_step "12/20: Deploy final nginx.conf — SKIPPED (done)"
+    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 13: Deploy Fail2ban
 ###############################################################################
 if ! is_done "step13"; then
-    msg_step "13/20: Deploy Fail2ban"
+    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban"
     FAIL2BAN_DIR="$SCRIPT_DIR/fail2ban"
     if [ ! -d "$FAIL2BAN_DIR" ]; then
         msg_info "Cloning fail2ban config from repository..."
@@ -598,28 +683,28 @@ if ! is_done "step13"; then
     msg_ok "Fail2ban deployed"
     mark_done "step13"
 else
-    msg_step "13/20: Deploy Fail2ban — SKIPPED (done)"
+    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 14: Install 3x-ui
 ###############################################################################
 if ! is_done "step14"; then
-    msg_step "14/20: Install 3x-ui"
+    msg_step "14/$TOTAL_STEPS: Install 3x-ui"
     curl -Ls -o /tmp/x-ui-install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
     sed -i 's/^[[:space:]]*config_after_install$/#config_after_install/' /tmp/x-ui-install.sh
     bash /tmp/x-ui-install.sh
     msg_ok "3x-ui installed (interactive config skipped)"
     mark_done "step14"
 else
-    msg_step "14/20: Install 3x-ui — SKIPPED (done)"
+    msg_step "14/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Step 15: Replace x-ui.db
 ###############################################################################
 if ! is_done "step15"; then
-    msg_step "15/20: Replace x-ui.db"
+    msg_step "15/$TOTAL_STEPS: Replace x-ui.db"
     echo ""
     msg_info "Upload your x-ui.db to the VPS from another terminal:"
     echo ""
@@ -631,96 +716,41 @@ if ! is_done "step15"; then
         sleep 2
     done
 
-    # Wait for file transfer to complete (size stable for 3 seconds)
-    msg_info "File detected, waiting for transfer to complete..."
-    PREV_SIZE=-1
-    while true; do
-        CURR_SIZE=$(stat -c%s "/home/$USERNAME/x-ui.db" 2>/dev/null || echo 0)
-        if [ "$CURR_SIZE" -gt 0 ] && [ "$CURR_SIZE" = "$PREV_SIZE" ]; then
-            break
-        fi
-        PREV_SIZE="$CURR_SIZE"
-        sleep 3
-    done
-    msg_ok "File transfer complete ($(( CURR_SIZE / 1024 )) KB)"
+    msg_ok "File detected: /home/$USERNAME/x-ui.db"
+    echo ""
+    msg_warn "Make sure the file transfer is FULLY COMPLETE before continuing."
+    msg_info "File size: $(stat -c%s "/home/$USERNAME/x-ui.db" 2>/dev/null || echo unknown) bytes"
+    echo ""
+    read -r -p "Is the upload finished? Press Enter to continue (or Ctrl+C to abort)..."
 
     systemctl stop x-ui
     cp "/home/$USERNAME/x-ui.db" /etc/x-ui/x-ui.db
     /usr/local/x-ui/x-ui migrate
     systemctl start x-ui
-    msg_ok "x-ui.db replaced and migrated"
+    msg_ok "x-ui.db replaced, migrated, and x-ui restarted"
     mark_done "step15"
 else
-    msg_step "15/20: Replace x-ui.db — SKIPPED (done)"
+    msg_step "15/$TOTAL_STEPS: Replace x-ui.db — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 16: 3x-ui service configuration
+# Step 16: Install CLIProxyAPI
 ###############################################################################
 if ! is_done "step16"; then
-    msg_step "16/20: Configure 3x-ui systemd service"
-    cp /usr/local/x-ui/x-ui.service.debian /etc/systemd/system/x-ui.service
-    chown root:root /etc/systemd/system/x-ui.service
-    chmod 644 /etc/systemd/system/x-ui.service
-    msg_ok "x-ui.service configured"
-    mark_done "step16"
-else
-    msg_step "16/20: Configure 3x-ui systemd service — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 17: 3x-ui jemalloc (via EnvironmentFile)
-###############################################################################
-if ! is_done "step17"; then
-    msg_step "17/20: Enable jemalloc for 3x-ui"
-    echo "LD_PRELOAD=$JEMALLOC_PATH" > /etc/default/x-ui
-    systemctl daemon-reload
-    systemctl enable x-ui
-    systemctl restart x-ui
-    msg_ok "3x-ui restarted with jemalloc"
-    mark_done "step17"
-else
-    msg_step "17/20: Enable jemalloc for 3x-ui — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 18: Install CLIProxyAPI
-###############################################################################
-if ! is_done "step18"; then
-    msg_step "18/20: Install CLIProxyAPI"
+    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI"
     loginctl enable-linger "$USERNAME"
     sudo -u "$USERNAME" bash -c 'curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash'
     msg_ok "CLIProxyAPI installed"
-    mark_done "step18"
+    mark_done "step16"
 else
-    msg_step "18/20: Install CLIProxyAPI — SKIPPED (done)"
+    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 19: CLIProxyAPI jemalloc (via systemd drop-in override)
+# Step 17: SSH Key authentication
 ###############################################################################
-if ! is_done "step19"; then
-    msg_step "19/20: Enable jemalloc for CLIProxyAPI"
-    USER_UID=$(id -u "$USERNAME")
-    mkdir -p "/home/$USERNAME/.config/systemd/user/cliproxyapi.service.d"
-    cat > "/home/$USERNAME/.config/systemd/user/cliproxyapi.service.d/override.conf" << EOF
-[Service]
-Environment="LD_PRELOAD=$JEMALLOC_PATH"
-EOF
-    chown -R "$USERNAME":"$USERNAME" "/home/$USERNAME/.config"
-    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user daemon-reload
-    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user restart cliproxyapi
-    msg_ok "CLIProxyAPI restarted with jemalloc"
-    mark_done "step19"
-else
-    msg_step "19/20: Enable jemalloc for CLIProxyAPI — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 20: SSH Key authentication
-###############################################################################
-if ! is_done "step20"; then
-    msg_step "20/20: SSH Key authentication"
+if ! is_done "step17"; then
+    msg_step "17/$TOTAL_STEPS: SSH Key authentication"
     echo ""
     msg_info "On your LOCAL machine (PowerShell), generate an SSH key if you haven't:"
     echo ""
@@ -760,16 +790,14 @@ if ! is_done "step20"; then
 
     systemctl restart ssh
     msg_ok "SSH key authentication configured, password login disabled"
-    mark_done "step20"
+    mark_done "step17"
 else
-    msg_step "20/20: SSH Key authentication — SKIPPED (done)"
+    msg_step "17/$TOTAL_STEPS: SSH Key authentication — SKIPPED (done)"
 fi
 
 ###############################################################################
 # Done
 ###############################################################################
-
-USER_UID=$(id -u "$USERNAME")
 
 echo ""
 echo "=========================================="
@@ -788,10 +816,11 @@ echo "  CLIProxyAPI : https://$DIRECT_DOMAIN/$CLIPROXY_PATH/"
 echo "  XHTTP path  : /$XHTTP_PATH"
 echo ""
 msg_info "Useful commands:"
-echo "  bash phase2-configure.sh --status   # Show all service status"
-echo "  bash phase2-configure.sh --reset    # Restore backups, stop services"
-echo "  ufw status                          # Check firewall"
-echo "  fail2ban-client status              # Check fail2ban jails"
+echo "  bash phase2-configure.sh --status           # Show all service status"
+echo "  bash phase2-configure.sh --reset            # Restore backups, stop services"
+echo "  bash phase2-configure.sh --generate-config  # Generate config template"
+echo "  ufw status                                  # Check firewall"
+echo "  fail2ban-client status                      # Check fail2ban jails"
 echo ""
 msg_info "State files (safe to delete after successful deployment):"
 echo "  $CONFIG_FILE   # Saved inputs"

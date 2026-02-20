@@ -24,15 +24,15 @@ bash phase1-kernel.sh
 
 ### Phase 2: Main Configuration (`phase2-configure.sh`)
 
-Run **after kernel reboot**. This is the main script covering 20 steps:
+Run **after kernel reboot**. This is the main script covering 17 steps:
 
 1. Disable virtio_balloon
 2. Create user + set passwords
 3. SSH port + root login hardening
-4. UFW firewall (IPv4 only: SSH/80/443)
+4. UFW firewall (IPv4 only: SSH/80/443 TCP+UDP)
 5. Deploy custom-built Nginx from GitHub Release
-6. Install jemalloc
-7. Create nginx.service with LD_PRELOAD
+6. Install jemalloc (for nginx only)
+7. Create nginx.service with jemalloc LD_PRELOAD
 8. ACME certificate (ZeroSSL via acme.sh)
 9. Cloudflare origin certificate (manual paste)
 10. Certificate directory permissions
@@ -40,15 +40,24 @@ Run **after kernel reboot**. This is the main script covering 20 steps:
 12. Deploy final nginx.conf from template
 13. Deploy Fail2ban
 14. Install 3x-ui (interactive config skipped via sed)
-15. Replace x-ui.db (user uploads via scp)
-16. Configure 3x-ui systemd service
-17. 3x-ui jemalloc via EnvironmentFile
-18. Install CLIProxyAPI
-19. CLIProxyAPI jemalloc via systemd drop-in
-20. SSH key authentication (disable password login)
+15. Replace x-ui.db (user uploads via scp, manual confirmation)
+16. Install CLIProxyAPI
+17. SSH key authentication (disable password login)
+
+> **Note:** jemalloc is only applied to nginx (C program). 3x-ui, Xray, and CLIProxyAPI are Go static binaries — `LD_PRELOAD` has no effect on them.
 
 ```bash
+# Interactive mode
 bash phase2-configure.sh
+
+# Or pre-fill config first (recommended for repeatability)
+bash phase2-configure.sh --generate-config
+nano /root/.vpsautodeploy.conf
+bash phase2-configure.sh
+
+# Other commands
+bash phase2-configure.sh --status   # Show all service status
+bash phase2-configure.sh --reset    # Restore backups, stop services
 ```
 
 ## Repository Structure
@@ -69,6 +78,7 @@ VPSAutoDeploy/
     ├── deploy.sh
     ├── jail.local
     ├── update-cloudflare-ips.sh
+    ├── unban_timerange.sh
     ├── nginx-additions.conf
     └── filter.d/
         ├── ...
@@ -82,8 +92,8 @@ VPSAutoDeploy/
 |---|---|---|---|
 | `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--password` parameter to bypass interaction | Parameter format may change |
 | BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | `echo "1\ny"` piped to stdin | Menu order may change |
-| 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` | Function name may be renamed |
-| 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` | Same as above |
+| 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` call | Function name may be renamed |
+| 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` call | Same as above |
 | CLIProxyAPI installer | [brokechubb/cliproxyapi-installer](https://github.com/brokechubb/cliproxyapi-installer) | Direct execution (zero interaction) | Service file format may change |
 | Fail2ban `deploy.sh` | This repository | Pass `SSH_PORT` env var | No external risk |
 
@@ -95,21 +105,21 @@ Do **not** use `x-ui update`. Instead:
 
 ```bash
 curl -Ls -o /tmp/x-ui-update.sh https://raw.githubusercontent.com/MHSanaei/3x-ui/main/update.sh
-sed -i 's/config_after_update/#config_after_update/' /tmp/x-ui-update.sh
+sed -i 's/^[[:space:]]*config_after_update$/#config_after_update/' /tmp/x-ui-update.sh
 bash /tmp/x-ui-update.sh
 ```
 
-LD_PRELOAD is injected via `/etc/default/x-ui`, which survives service file updates.
+The `sed` only comments out the `config_after_update` function **call** (not the function definition), which skips the interactive SSL/credential prompts while preserving database migration.
 
 ### CLIProxyAPI Update
 
-Re-run the installer:
+Re-run the installer as the service user:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash
 ```
 
-LD_PRELOAD is injected via systemd drop-in override (`~/.config/systemd/user/cliproxyapi.service.d/override.conf`), which is unaffected by installer overwrites.
+The installer preserves existing `config.yaml` via automatic backup/restore.
 
 ## Verification Checklist
 
@@ -118,12 +128,12 @@ LD_PRELOAD is injected via systemd drop-in override (`~/.config/systemd/user/cli
 - [ ] virtio_balloon: `lsmod | grep balloon` returns empty
 - [ ] User: new user can `sudo`
 - [ ] SSH: custom port works
-- [ ] UFW: `ufw status` shows IPv4 rules only, 80/443/SSH allowed
+- [ ] UFW: `ufw status` shows IPv4 rules only, 80/443(tcp+udp)/SSH allowed
 - [ ] Nginx: `curl http://DIRECT_DOMAIN/.well-known/acme-challenge/test` returns 200/404 (not connection refused)
 - [ ] Certificate: `openssl s_client -connect DIRECT_DOMAIN:443` shows valid cert
 - [ ] CF cert: CDN domain accessible via Cloudflare
 - [ ] Fail2ban: `fail2ban-client status` shows all jails active
 - [ ] 3x-ui: `https://DIRECT_DOMAIN/XUI_PANEL_PATH/` accessible in browser
 - [ ] CLIProxyAPI: endpoint accessible
-- [ ] jemalloc: `/proc/PID/maps` for nginx, x-ui, cliproxyapi all contain `libjemalloc`
+- [ ] jemalloc: `grep libjemalloc /proc/$(pgrep -x nginx -o)/maps` shows loaded
 - [ ] SSH key: key login works, password login rejected
