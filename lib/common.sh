@@ -135,10 +135,10 @@ render_template() {
 
 # ── State persistence (resume support) ──────────────────────────────
 # State file tracks completed steps; config file saves user inputs.
-# Both default to /root/.vpsautodeploy.*
 
-STATE_FILE="/root/.vpsautodeploy.state"
-CONFIG_FILE="/root/.vpsautodeploy.conf"
+STATE_FILE="/root/vpsautodeploy.state"
+CONFIG_FILE="/root/vpsautodeploy.conf"
+CONFIG_FILENAME="vpsautodeploy.conf"
 
 # Mark a step as completed
 mark_done() {
@@ -171,12 +171,24 @@ CONF
     chmod 600 "$CONFIG_FILE"
 }
 
-# Load config from file; returns 0 if loaded, 1 if not found
+# Load config from file; returns 0 if loaded, 1 if not found.
+# Search order: /root/vpsautodeploy.conf, then /home/*/vpsautodeploy.conf
 load_config() {
+    # Primary location
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
         return 0
     fi
+    # Scan /home/*/ for uploaded config (user may SCP as non-root)
+    for candidate in /home/*/"$CONFIG_FILENAME"; do
+        if [ -f "$candidate" ]; then
+            msg_info "Found config at $candidate, moving to $CONFIG_FILE"
+            mv "$candidate" "$CONFIG_FILE"
+            chmod 600 "$CONFIG_FILE"
+            source "$CONFIG_FILE"
+            return 0
+        fi
+    done
     return 1
 }
 

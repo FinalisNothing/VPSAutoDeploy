@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 require_root
 
-BACKUP_DIR="/root/.vpsautodeploy.backup"
+BACKUP_DIR="/root/vpsautodeploy.backup"
 TOTAL_STEPS=17
 
 ###############################################################################
@@ -101,6 +101,11 @@ TEMPLATE
     echo ""
     echo "  bash phase2-configure.sh"
     echo ""
+    msg_info "Or: edit locally and upload via SCP to any user's home directory:"
+    echo ""
+    echo "  scp vpsautodeploy.conf <user>@<VPS_IP>:~/"
+    echo ""
+    msg_info "The script will auto-detect and move it to $CONFIG_FILE"
     exit 0
 fi
 
