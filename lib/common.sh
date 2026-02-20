@@ -133,6 +133,53 @@ render_template() {
     printf '%s\n' "$content" > "$output"
 }
 
+# ── State persistence (resume support) ──────────────────────────────
+# State file tracks completed steps; config file saves user inputs.
+# Both default to /root/.vpsautodeploy.*
+
+STATE_FILE="/root/.vpsautodeploy.state"
+CONFIG_FILE="/root/.vpsautodeploy.conf"
+
+# Mark a step as completed
+mark_done() {
+    local step="$1"
+    echo "$step" >> "$STATE_FILE"
+}
+
+# Check if a step is already completed
+is_done() {
+    local step="$1"
+    [ -f "$STATE_FILE" ] && grep -qFx "$step" "$STATE_FILE"
+}
+
+# Save all config variables to file (call after input collection)
+save_config() {
+    cat > "$CONFIG_FILE" << CONF
+USERNAME=$(printf '%q' "$USERNAME")
+USER_PASSWORD=$(printf '%q' "$USER_PASSWORD")
+ROOT_PASSWORD=$(printf '%q' "$ROOT_PASSWORD")
+SSH_PORT=$(printf '%q' "$SSH_PORT")
+ACME_EMAIL=$(printf '%q' "$ACME_EMAIL")
+DIRECT_DOMAIN=$(printf '%q' "$DIRECT_DOMAIN")
+CDN_DOMAIN=$(printf '%q' "$CDN_DOMAIN")
+XHTTP_PATH=$(printf '%q' "$XHTTP_PATH")
+CLIPROXY_PATH=$(printf '%q' "$CLIPROXY_PATH")
+XUI_PANEL_PATH=$(printf '%q' "$XUI_PANEL_PATH")
+XUI_PANEL_PORT=$(printf '%q' "$XUI_PANEL_PORT")
+BACKEND_WEB=$(printf '%q' "$BACKEND_WEB")
+CONF
+    chmod 600 "$CONFIG_FILE"
+}
+
+# Load config from file; returns 0 if loaded, 1 if not found
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+        return 0
+    fi
+    return 1
+}
+
 # ── Misc ────────────────────────────────────────────────────────────
 
 # Wait for a file to appear (polling)
