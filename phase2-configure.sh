@@ -599,7 +599,7 @@ fi
 if ! is_done "step14"; then
     msg_step "14/20: Install 3x-ui"
     curl -Ls -o /tmp/x-ui-install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
-    sed -i 's/config_after_install/#config_after_install/' /tmp/x-ui-install.sh
+    sed -i 's/^[[:space:]]*config_after_install$/#config_after_install/' /tmp/x-ui-install.sh
     bash /tmp/x-ui-install.sh
     msg_ok "3x-ui installed (interactive config skipped)"
     mark_done "step14"
