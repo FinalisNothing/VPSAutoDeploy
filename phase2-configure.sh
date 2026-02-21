@@ -495,10 +495,10 @@ if ! is_done "step4"; then
     msg_step "4/$TOTAL_STEPS: Configure UFW firewall"
     apt install -y ufw
     backup_file "/etc/default/ufw"
-    # Keep IPV6=yes so UFW manages both stacks properly.
-    # IPv6 outbound stays open; IPv6 inbound is blocked by "default deny incoming".
-    # All allow rules below use "from 0.0.0.0/0" so they only match IPv4.
-    sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
+    # Debian default IPV6=yes — no need to change.
+    # "default deny incoming" blocks all inbound (v4+v6), then allow rules whitelist specific ports.
+    # Allow rules use "from 0.0.0.0/0" so only IPv4 inbound is whitelisted; IPv6 inbound stays denied.
+    # "default allow outgoing" permits all outbound (v4+v6).
     ufw default allow outgoing
     ufw default deny incoming
     ufw allow proto tcp from 0.0.0.0/0 to any port "$SSH_PORT"
