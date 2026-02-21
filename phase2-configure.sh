@@ -495,7 +495,10 @@ if ! is_done "step4"; then
     msg_step "4/$TOTAL_STEPS: Configure UFW firewall"
     apt install -y ufw
     backup_file "/etc/default/ufw"
-    sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
+    # Keep IPV6=yes so UFW manages both stacks properly.
+    # IPv6 outbound stays open; IPv6 inbound is blocked by "default deny incoming".
+    # All allow rules below use "from 0.0.0.0/0" so they only match IPv4.
+    sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
     ufw default allow outgoing
     ufw default deny incoming
     ufw allow proto tcp from 0.0.0.0/0 to any port "$SSH_PORT"
