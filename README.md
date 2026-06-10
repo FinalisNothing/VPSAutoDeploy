@@ -4,14 +4,34 @@ Automated VPS deployment scripts for Debian 13 with Xray + Nginx + 3x-ui + CLIPr
 
 ## Deployment Phases
 
-### Phase 0: DD Reinstall (`phase0-reinstall.sh`)
+### Phase 0: Reinstall (`phase0-reinstall.sh`)
 
-Run on the **old system**. Downloads and executes the DD reinstall script to wipe the VPS and install a fresh Debian 13.
+Run on the **provider's original system** (any distro), as root. It wraps
+[bin456789/reinstall](https://github.com/bin456789/reinstall) as
+`--username <user> --password <pw> --ssh-port <port> debian 13` — wiping the VPS
+and installing a fresh Debian 13 that boots with SSH already on your chosen port.
+
+**First check whether your network reaches the VPS on port 22** (`ssh <provider's account>@<VPS_IP> -p 22`):
+
+- **Reachable** — run phase0 inside that SSH session. Pick a port yourself or press Enter for a random one.
+- **Blocked** — open the provider's web VNC console and type the same two commands there.
+  VNC has no paste, so press **Enter for a random port** and **write down the port the
+  script prints**. No separate "change the port first, then SSH in" detour is needed —
+  the reinstall itself sets the port.
 
 ```bash
+curl -O https://raw.githubusercontent.com/FinalisNothing/VPSAutoDeploy/main/phase0-reinstall.sh
 bash phase0-reinstall.sh
-# After reboot, SSH in with: ssh root@VPS_IP -p 22
+# prompts: username / password / SSH port -> YES -> run 'reboot' to start (~5-10 min)
 ```
+
+The result of reinstall's **non-root mode** (what phase0 always uses):
+
+- Log in with `ssh <username>@<VPS_IP> -p <port>` and the password you set.
+  **Not `ssh root@...`** — root has no password and cannot log in; become root with `sudo -i`
+  (reinstall configures passwordless sudo for the user).
+- If the provider has a firewall/security group, allow TCP `<port>` there — the script
+  reminds you before the reboot.
 
 ### Phase 1: Kernel Replacement (`phase1-kernel.sh`)
 
@@ -100,7 +120,7 @@ VPSAutoDeploy/
 
 | External Script | Source | Our Handling | Change Risk |
 |---|---|---|---|
-| `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--password` parameter to bypass interaction | Parameter format may change |
+| `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--username/--password/--ssh-port` to bypass interaction (never `--ssh-key`) | Parameter format may change |
 | BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | `echo "1\nn"` to install kernel without auto-reboot; queue algorithm configured via sysctl file | Menu order may change |
 | 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` call | Function name may be renamed |
 | 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` call | Same as above |
@@ -133,7 +153,7 @@ The installer preserves existing `config.yaml` via automatic backup/restore.
 
 ## Verification Checklist
 
-- [ ] phase0: DD reinstall successful, SSH login works
+- [ ] phase0: reinstall successful, `ssh <username>@<VPS_IP> -p <port>` works, `sudo -i` reaches root
 - [ ] phase1: `uname -r` shows BBR v3 kernel
 - [ ] phase1: `sysctl net.ipv4.tcp_congestion_control` shows `bbr`
 - [ ] phase1: `sysctl net.core.default_qdisc` shows chosen algorithm (fq/fq_codel/fq_pie/cake)
