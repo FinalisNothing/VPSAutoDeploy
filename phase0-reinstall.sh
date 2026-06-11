@@ -12,6 +12,10 @@
 #
 # What it does: collect <username> <password> <ssh port>, then run
 #   reinstall.sh --username U --password PW --ssh-port P debian 13
+# Password and port both accept Enter = random, so in VNC nothing secret is
+# typed - RECORD what is shown (copy by hand or photograph with an offline
+# device, never into an online note). harden-ssh.sh offers to replace the
+# password later over real SSH.
 # Never --ssh-key: the SSH key is installed for the user AFTER the first login,
 # over a real SSH session where pasting is safe (VNC is type-only).
 #
@@ -59,14 +63,21 @@ while true; do
     fi
 done
 
-# Password: used to log in as $USERNAME and, later, as the sudo password.
+# Password: logs $USERNAME in after the reboot and stays as the sudo password.
+# Enter = random (the right choice in VNC: you type no secret; the result is
+# shown once in the summary). Typing your own is fine over a real SSH session.
 while true; do
-    printf "Password for %s (hidden): " "$USERNAME"
+    printf "Password for %s [Enter = random] (typing hidden): " "$USERNAME"
     IFS= read -r -s PASSWORD < "$TTY"; echo
-    [ -n "$PASSWORD" ] || { msg_warn "Password must not be empty."; continue; }
+    if [ -z "$PASSWORD" ]; then
+        # No l/I/O/0/1: unambiguous when copied off a VNC screen by hand.
+        PASSWORD=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' < /dev/urandom | head -c 16)
+        PASSWORD_IS_RANDOM=1
+        break
+    fi
     printf "Retype password: "
     IFS= read -r -s PASSWORD2 < "$TTY"; echo
-    [ "$PASSWORD" = "$PASSWORD2" ] && break
+    [ "$PASSWORD" = "$PASSWORD2" ] && { PASSWORD_IS_RANDOM=0; break; }
     msg_warn "Passwords do not match. Try again."
 done
 
@@ -102,9 +113,15 @@ msg_step "3: Confirm"
 echo ""
 echo "  Target system : Debian 13"
 echo "  Login user    : $USERNAME   (root cannot log in)"
+if [ "$PASSWORD_IS_RANDOM" -eq 1 ]; then
+    echo "  Password      : $PASSWORD   (RANDOM - record it NOW)"
+else
+    echo "  Password      : (the one you typed)"
+fi
 echo "  SSH port      : $SSH_PORT"
 echo ""
-msg_warn "WRITE DOWN the username and port. After reboot they are the ONLY way in."
+msg_warn "RECORD username, port and password - by hand or an offline camera,"
+msg_warn "never into an online note. After reboot they are the ONLY way in."
 msg_warn "Reinstalling will ERASE ALL DATA on this VPS."
 echo ""
 printf "Type YES to proceed: "
@@ -124,7 +141,7 @@ msg_info "1. If your provider has a firewall/security group, allow TCP $SSH_PORT
 msg_info "2. Run 'reboot'. The reinstall takes ~5-10 minutes."
 msg_info "3. Then log in to the new Debian 13:"
 echo ""
-echo "       ssh $USERNAME@<VPS_IP> -p $SSH_PORT     (password you just set)"
+echo "       ssh $USERNAME@<VPS_IP> -p $SSH_PORT     (the password recorded above)"
 echo ""
 msg_info "   Do NOT try ssh root@... - root cannot log in on this setup."
 msg_info "4. Become root with: sudo -i"

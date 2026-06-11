@@ -8,16 +8,19 @@
 #   git clone https://github.com/FinalisNothing/VPSAutoDeploy.git
 #   cd VPSAutoDeploy && bash harden-ssh.sh
 #
-# phase0's reinstall (password mode) leaves four gaps; this script closes them:
+# phase0's reinstall (password mode) leaves these gaps; this script closes them:
 #   1. the user has no SSH key  -> install YOUR ed25519 public key, pasted over
 #      this SSH session (never typed into VNC, never installed for root)
-#   2. root has no password     -> set one, for `su -` and for VNC-console
+#   2. the user's password may have been SHOWN on a VNC screen (phase0's
+#      random one) -> optionally replace it here, where typing is private;
+#      kept or replaced, it is what sudo asks for from now on
+#   3. root has no password     -> set one, for `su -` and for VNC-console
 #      rescue if the key is ever lost. root stays un-loginable over SSH:
 #      PermitRootLogin keeps the compiled default prohibit-password (= key
 #      only) and root has no key.
-#   3. sudo asks no password    -> remove reinstall's NOPASSWD file; sudo then
+#   4. sudo asks no password    -> remove reinstall's NOPASSWD file; sudo then
 #      asks for the user's own password (via the %sudo group rule)
-#   4. sshd accepts passwords   -> PasswordAuthentication no +
+#   5. sshd accepts passwords   -> PasswordAuthentication no +
 #      KbdInteractiveAuthentication no, key-only from here on
 #
 # Every change is fact-checked on the spot (ssh-keygen -lf, passwd -S,
@@ -71,6 +74,23 @@ done
 msg_ok "Key parsed: $FINGERPRINT"
 msg_info "'ssh-keygen -lf ~/.ssh/id_ed25519.pub' on your local machine must show the SAME fingerprint."
 
+# Two different passwords are handled below - they are easy to mix up.
+msg_info "Two passwords are involved - keep them apart:"
+echo "        ${USERNAME}'s password : you logged in with it; sudo asks for it from now on."
+echo "        root's password        : new; only for 'su -' and the VNC console."
+
+# The user's password: replace it if phase0 displayed it on a VNC screen
+# (typing here is private - this is a real SSH session). Enter keeps it.
+while true; do
+    printf "New password for %s [Enter = keep the current one] (hidden): " "$USERNAME"
+    IFS= read -r -s USER_PW < "$TTY"; echo
+    [ -z "$USER_PW" ] && break
+    printf "Retype %s's new password: " "$USERNAME"
+    IFS= read -r -s USER_PW2 < "$TTY"; echo
+    [ "$USER_PW" = "$USER_PW2" ] && break
+    msg_warn "Passwords do not match. Try again."
+done
+
 # root's password: opens `su -` and the provider's VNC console, not SSH.
 while true; do
     printf "New password for root (hidden): "
@@ -91,9 +111,17 @@ chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 chown -R "$USERNAME:" "$HOME_DIR/.ssh"
 msg_ok "Installed: $HOME_DIR/.ssh/authorized_keys"
 
-# ── root password ───────────────────────────────────────────────────
-msg_step "3: Give root a password"
-printf '%s:%s\n' root "$ROOT_PW" | chpasswd || die "chpasswd failed."
+# ── Passwords ───────────────────────────────────────────────────────
+msg_step "3: Set passwords"
+if [ -n "$USER_PW" ]; then
+    printf '%s:%s\n' "$USERNAME" "$USER_PW" | chpasswd || die "chpasswd ($USERNAME) failed."
+    UPW_STATUS=$(passwd -S "$USERNAME" | awk '{print $2}')
+    [ "$UPW_STATUS" = "P" ] || die "Fact check failed: 'passwd -S $USERNAME' says '$UPW_STATUS', expected P."
+    msg_ok "${USERNAME}'s password replaced - the one shown in VNC is now dead. sudo asks for the NEW one."
+else
+    msg_info "${USERNAME}'s password kept - sudo asks for it as-is."
+fi
+printf '%s:%s\n' root "$ROOT_PW" | chpasswd || die "chpasswd (root) failed."
 PW_STATUS=$(passwd -S root | awk '{print $2}')
 [ "$PW_STATUS" = "P" ] || die "Fact check failed: 'passwd -S root' says '$PW_STATUS', expected P."
 msg_ok "root now has a usable password (passwd -S root: P)."

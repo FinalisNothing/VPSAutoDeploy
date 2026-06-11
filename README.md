@@ -15,9 +15,10 @@ and installing a fresh Debian 13 that boots with SSH already on your chosen port
 
 - **Reachable** — run phase0 inside that SSH session. Pick a port yourself or press Enter for a random one.
 - **Blocked** — open the provider's web VNC console and type the same two commands there.
-  VNC has no paste, so press **Enter for a random port** and **write down the port the
-  script prints**. No separate "change the port first, then SSH in" detour is needed —
-  the reinstall itself sets the port.
+  VNC has no paste, so press **Enter at the password and port prompts** (the script
+  generates random values) and **record what it prints** — copy by hand or photograph
+  with an offline device, never into an online note. No separate "change the port
+  first, then SSH in" detour is needed — the reinstall itself sets the port.
 
 ```bash
 curl -O https://raw.githubusercontent.com/FinalisNothing/VPSAutoDeploy/main/phase0-reinstall.sh
@@ -27,7 +28,8 @@ bash phase0-reinstall.sh
 
 The result of reinstall's **non-root mode** (what phase0 always uses):
 
-- Log in with `ssh <username>@<VPS_IP> -p <port>` and the password you set.
+- Log in with `ssh <username>@<VPS_IP> -p <port>` and the password from the
+  confirmation summary.
   **Not `ssh root@...`** — root has no password and cannot log in; become root with `sudo -i`
   (reinstall configures passwordless sudo for the user).
 - If the provider has a firewall/security group, allow TCP `<port>` there — the script
@@ -47,12 +49,13 @@ git clone https://github.com/FinalisNothing/VPSAutoDeploy.git
 cd VPSAutoDeploy && bash harden-ssh.sh
 ```
 
-It closes the four gaps reinstall's password mode leaves open, fact-checking
+It closes the five gaps reinstall's password mode leaves open, fact-checking
 each change on the spot (`ssh-keygen -lf`, `passwd -S`, `sudo -l`, `sshd -T`):
 
 | Before (reinstall password mode) | After |
 |---|---|
 | the user logs in with a password | the user logs in with **your ed25519 key** (generated on your local machine: `ssh-keygen -t ed25519`, public key pasted into the prompt) |
+| the user's password may have been shown on a VNC screen (phase0's random one) | optionally replaced over the SSH session — Enter keeps it; kept or replaced, it is the **sudo password** from then on |
 | sshd accepts passwords | `PasswordAuthentication no` + `KbdInteractiveAuthentication no` |
 | sudo asks no password (`/etc/sudoers.d/99-<user>`) | that file is removed — sudo asks for the **user's own password** |
 | root has no password at all | root has a password for **`su -` and VNC-console rescue**; SSH still rejects root (`PermitRootLogin` keeps the default `prohibit-password`, and root has no key) |
