@@ -18,7 +18,8 @@
 # The reinstalled Debian 13 (reinstall's non-root mode):
 #   - sshd listens on the chosen port; login: ssh <username>@IP -p <port> + password
 #   - root has NO password and CANNOT log in; escalate with `sudo -i`
-#     (reinstall grants the user passwordless sudo; hardened later, not here)
+#     (reinstall grants the user passwordless sudo; harden-ssh.sh tightens
+#      this right after the first login)
 
 set -u
 
@@ -127,8 +128,10 @@ echo "       ssh $USERNAME@<VPS_IP> -p $SSH_PORT     (password you just set)"
 echo ""
 msg_info "   Do NOT try ssh root@... - root cannot log in on this setup."
 msg_info "4. Become root with: sudo -i"
-msg_info "5. Continue with phase1:"
+msg_info "5. Harden the login (paste YOUR ssh key, close password login):"
 echo ""
 echo "       apt update && apt install -y git"
 echo "       git clone https://github.com/FinalisNothing/VPSAutoDeploy.git"
-echo "       cd VPSAutoDeploy && bash phase1-kernel.sh"
+echo "       cd VPSAutoDeploy && bash harden-ssh.sh"
+echo ""
+msg_info "6. Then continue with: bash phase1-kernel.sh"

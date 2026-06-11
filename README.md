@@ -33,6 +33,35 @@ The result of reinstall's **non-root mode** (what phase0 always uses):
 - If the provider has a firewall/security group, allow TCP `<port>` there — the script
   reminds you before the reboot.
 
+### First-login hardening (`harden-ssh.sh`)
+
+Run on the **fresh Debian 13**, right after the first SSH login, before phase1.
+This is a real SSH session, so pasting is safe — which is exactly why the key
+is not supplied during phase0/VNC.
+
+```bash
+ssh <username>@<VPS_IP> -p <port>        # password from phase0
+sudo -i
+apt update && apt install -y git
+git clone https://github.com/FinalisNothing/VPSAutoDeploy.git
+cd VPSAutoDeploy && bash harden-ssh.sh
+```
+
+It closes the four gaps reinstall's password mode leaves open, fact-checking
+each change on the spot (`ssh-keygen -lf`, `passwd -S`, `sudo -l`, `sshd -T`):
+
+| Before (reinstall password mode) | After |
+|---|---|
+| the user logs in with a password | the user logs in with **your ed25519 key** (generated on your local machine: `ssh-keygen -t ed25519`, public key pasted into the prompt) |
+| sshd accepts passwords | `PasswordAuthentication no` + `KbdInteractiveAuthentication no` |
+| sudo asks no password (`/etc/sudoers.d/99-<user>`) | that file is removed — sudo asks for the **user's own password** |
+| root has no password at all | root has a password for **`su -` and VNC-console rescue**; SSH still rejects root (`PermitRootLogin` keeps the default `prohibit-password`, and root has no key) |
+
+The script ends by telling you to prove the key login from a **second terminal
+before closing the working session**. If the key is ever lost, the provider's
+VNC console + the root password is the way back in — the VNC console does not
+pass through sshd, so the SSH restrictions do not apply there.
+
 ### Phase 1: Kernel Replacement (`phase1-kernel.sh`)
 
 Run on the **freshly reinstalled system**. Updates packages, installs a BBR v3 kernel, and lets you choose a queue discipline (fq/fq_codel/fq_pie/cake).
@@ -96,6 +125,7 @@ The script auto-detects and loads config from `/root/` or any `/home/*/` directo
 VPSAutoDeploy/
 ├── README.md
 ├── phase0-reinstall.sh
+├── harden-ssh.sh
 ├── phase1-kernel.sh
 ├── phase2-configure.sh
 ├── templates/
@@ -154,6 +184,7 @@ The installer preserves existing `config.yaml` via automatic backup/restore.
 ## Verification Checklist
 
 - [ ] phase0: reinstall successful, `ssh <username>@<VPS_IP> -p <port>` works, `sudo -i` reaches root
+- [ ] harden-ssh: key login works, password login rejected, `sudo` asks the user's password, `su -` accepts the root password
 - [ ] phase1: `uname -r` shows BBR v3 kernel
 - [ ] phase1: `sysctl net.ipv4.tcp_congestion_control` shows `bbr`
 - [ ] phase1: `sysctl net.core.default_qdisc` shows chosen algorithm (fq/fq_codel/fq_pie/cake)
