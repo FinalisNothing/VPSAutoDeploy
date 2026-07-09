@@ -88,8 +88,27 @@ else
     msg_ok "System updated and essentials installed"
 fi
 
-# ── Step 2: Install BBR v3 kernel (no reboot yet) ──────────────────
-msg_step "2: Install BBR v3 kernel"
+# ── Step 2: Blacklist virtio_balloon ────────────────────────────────
+msg_step "2: Blacklist virtio_balloon"
+# The balloon driver lets the host reclaim guest memory; on a small VPS it
+# fights the proxy stack for RAM. Blacklisting only takes effect at a
+# reboot, and phase1 is the phase that reboots - so the blacklist rides
+# along here (it used to live in phase2, which never reboots). Done BEFORE
+# the kernel install so the new kernel's initramfs is built with it.
+BALLOON_BLACKLISTED_THIS_RUN=0
+if [ -f /etc/modprobe.d/blacklist-balloon.conf ]; then
+    msg_ok "virtio_balloon already blacklisted"
+elif lsmod | grep -q virtio_balloon; then
+    echo "blacklist virtio_balloon" > /etc/modprobe.d/blacklist-balloon.conf
+    update-initramfs -u
+    BALLOON_BLACKLISTED_THIS_RUN=1
+    msg_ok "virtio_balloon blacklisted (unloads at the reboot below)"
+else
+    msg_info "virtio_balloon not loaded - nothing to blacklist"
+fi
+
+# ── Step 3: Install BBR v3 kernel (no reboot yet) ──────────────────
+msg_step "3: Install BBR v3 kernel"
 download_bbr_installer
 
 if [ "$RUNNING_ACTIONS_BBR_V3" -eq 1 ]; then
@@ -110,8 +129,8 @@ else
     msg_ok "BBR v3 kernel installed"
 fi
 
-# ── Step 3: Choose BBR queue algorithm ──────────────────────────────
-msg_step "3: Choose BBR queue algorithm"
+# ── Step 4: Choose BBR queue algorithm ──────────────────────────────
+msg_step "4: Choose BBR queue algorithm"
 echo ""
 echo "  Select a queue discipline to pair with BBR:"
 echo ""
@@ -140,8 +159,8 @@ if ! printf '%s\ny\n' "$INSTALL_ACTION" | bash "$BBR_INSTALLER"; then
         msg_info "Recommended recovery:"
         echo "  1. Reboot into the newly installed BBR v3 kernel."
         echo "  2. Run this script again: bash $0"
-        echo "     It will detect the new kernel, skip Steps 1-2, and continue to Step 3."
-        echo "  3. Select the same queue algorithm in Step 3."
+        echo "     It will detect the new kernel, skip Steps 1-3, and continue to Step 4."
+        echo "  3. Select the same queue algorithm in Step 4."
         echo ""
         read -r -p "Reboot now to retry under the new kernel? [Y/n]: " RETRY_REBOOT_NOW
         if [[ "$RETRY_REBOOT_NOW" =~ ^[Nn]$ ]]; then
@@ -159,7 +178,7 @@ if ! printf '%s\ny\n' "$INSTALL_ACTION" | bash "$BBR_INSTALLER"; then
 fi
 msg_ok "BBR + $QDISC applied and saved by the BBR v3 installer"
 
-# ── Step 4: Reboot ─────────────────────────────────────────────────
+# ── Step 5: Reboot ─────────────────────────────────────────────────
 echo ""
 echo "=========================================="
 if [ "$KERNEL_INSTALLED_THIS_RUN" -eq 1 ]; then
@@ -186,6 +205,9 @@ echo "  sysctl net.core.default_qdisc               # should show $QDISC"
 echo ""
 
 if [ "$KERNEL_INSTALLED_THIS_RUN" -eq 0 ]; then
+    if [ "$BALLOON_BLACKLISTED_THIS_RUN" -eq 1 ]; then
+        msg_warn "virtio_balloon was blacklisted this run but stays loaded until the next reboot."
+    fi
     msg_info "No reboot is required by phase1. Continue with phase2-configure.sh"
     exit 0
 fi
