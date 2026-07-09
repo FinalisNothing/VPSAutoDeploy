@@ -1,7 +1,7 @@
 #!/bin/bash
 # phase1-kernel.sh - Replace kernel with BBR v3 support
 # Run this on the freshly reinstalled Debian 13 system.
-# After reboot, run phase2-configure.sh.
+# After reboot, run phase2-deploy.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -208,13 +208,13 @@ if [ "$KERNEL_INSTALLED_THIS_RUN" -eq 0 ]; then
     if [ "$BALLOON_BLACKLISTED_THIS_RUN" -eq 1 ]; then
         msg_warn "virtio_balloon was blacklisted this run but stays loaded until the next reboot."
     fi
-    msg_info "No reboot is required by phase1. Continue with phase2-configure.sh"
+    msg_info "No reboot is required by phase1. Continue with phase2-deploy.sh"
     exit 0
 fi
 
 read -r -p "Reboot now? [Y/n]: " REBOOT_NOW
 if [[ "$REBOOT_NOW" =~ ^[Nn]$ ]]; then
-    msg_info "Remember to run 'reboot' manually, then phase2-configure.sh"
+    msg_info "Remember to run 'reboot' manually, then phase2-deploy.sh"
 else
     msg_info "Rebooting..."
     reboot

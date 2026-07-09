@@ -152,18 +152,15 @@ is_done() {
     [ -f "$STATE_FILE" ] && grep -qFx "$step" "$STATE_FILE"
 }
 
-# Save all config variables to file (call after input collection)
+# Save all config variables to file (call after input collection).
+# Service parameters only - identity (username, passwords, SSH port) is
+# owned by phase0/harden-ssh and detected from the system by phase2.
 save_config() {
     cat > "$CONFIG_FILE" << CONF
-USERNAME=$(printf '%q' "$USERNAME")
-USER_PASSWORD=$(printf '%q' "$USER_PASSWORD")
-ROOT_PASSWORD=$(printf '%q' "$ROOT_PASSWORD")
-SSH_PORT=$(printf '%q' "$SSH_PORT")
 ACME_EMAIL=$(printf '%q' "$ACME_EMAIL")
 DIRECT_DOMAIN=$(printf '%q' "$DIRECT_DOMAIN")
 CDN_DOMAIN=$(printf '%q' "$CDN_DOMAIN")
 XHTTP_PATH=$(printf '%q' "$XHTTP_PATH")
-CLIPROXY_PATH=$(printf '%q' "$CLIPROXY_PATH")
 XUI_PANEL_PATH=$(printf '%q' "$XUI_PANEL_PATH")
 XUI_PANEL_PORT=$(printf '%q' "$XUI_PANEL_PORT")
 BACKEND_WEB=$(printf '%q' "$BACKEND_WEB")

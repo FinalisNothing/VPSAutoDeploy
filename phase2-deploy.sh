@@ -1,12 +1,24 @@
 #!/bin/bash
-# phase2-configure.sh - Main VPS configuration script
-# Run this after BBR v3 kernel reboot (phase1).
+# phase2-deploy.sh - Deploy the service stack on the hardened VPS.
+# Run after the phase1 kernel reboot.
+#
+# Earlier phases own identity and login, so this script never asks for them:
+#   phase0        created the sudo user, baked the SSH port in at DD time
+#   harden-ssh    installed your key, closed password login, set passwords
+#   phase1        BBR v3 kernel + qdisc (+ virtio_balloon blacklist)
+# The preflight DETECTS the user and SSH port from the system and verifies
+# those contracts. The config file carries service parameters only
+# (domains, email, paths, ports) - no credentials.
+#
+# Zero-touch run: pre-upload the optional artifacts together with the config
+# and the run needs no interaction at all:
+#   scp vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
 #
 # Supports:
-#   bash phase2-configure.sh                    # Normal run (with resume)
-#   bash phase2-configure.sh --status           # Show service status
-#   bash phase2-configure.sh --reset            # Restore backups, stop services
-#   bash phase2-configure.sh --generate-config  # Generate config template file
+#   bash phase2-deploy.sh                    # Normal run (with resume)
+#   bash phase2-deploy.sh --status           # Show service status
+#   bash phase2-deploy.sh --reset            # Restore backups, stop services
+#   bash phase2-deploy.sh --generate-config  # Generate config template file
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -14,7 +26,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 require_root
 
 BACKUP_DIR="/root/vpsautodeploy.backup"
-TOTAL_STEPS=17
+TOTAL_STEPS=11
 
 ###############################################################################
 # Backup / restore helpers
@@ -45,6 +57,78 @@ restore_file() {
 }
 
 ###############################################################################
+# System detection - the phase2 entry point.
+# Identity facts are read from the system, never asked for:
+#   USERNAME  the phase0 user (sudo -i keeps SUDO_USER; fallback: UID 1000)
+#   SSH_PORT  the running sshd's effective port
+###############################################################################
+detect_system() {
+    USERNAME="${SUDO_USER:-}"
+    if [ -z "$USERNAME" ] || [ "$USERNAME" = "root" ]; then
+        USERNAME="$(getent passwd 1000 2>/dev/null | cut -d: -f1)" || USERNAME=""
+    fi
+    [ -n "$USERNAME" ] || die "Cannot detect the phase0 user (no SUDO_USER, no UID-1000 account). Log in as your user, then: sudo -i"
+    validate_username "$USERNAME"
+    USER_HOME="$(getent passwd "$USERNAME" | cut -d: -f6)"
+    [ "$USER_HOME" = "/home/$USERNAME" ] || die "Unexpected home '$USER_HOME' for $USERNAME - the nginx template assumes /home/$USERNAME."
+    [ -d "$USER_HOME" ] || die "Home directory $USER_HOME not found."
+    id -nG "$USERNAME" | tr ' ' '\n' | grep -qx sudo \
+        || die "$USERNAME is not in the sudo group - were phase0 and harden-ssh completed?"
+
+    SSH_PORT="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')" || SSH_PORT=""
+    [ -n "$SSH_PORT" ] || die "Cannot read the effective SSH port (sshd -T failed). Is sshd running?"
+    validate_port "SSH_PORT (detected)" "$SSH_PORT"
+}
+
+# Verify the contracts the earlier phases established. Warn-and-confirm, not
+# die: a recovery re-run on a half-configured box is legitimate.
+verify_hardening() {
+    local pa cc
+    pa="$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')" || pa=""
+    if [ "$pa" = "no" ]; then
+        msg_ok "sshd: password login closed (harden-ssh contract holds)"
+    else
+        msg_warn "sshd still accepts passwords (PasswordAuthentication=${pa:-unknown})."
+        msg_warn "harden-ssh.sh was not run or was undone. Deploying on an unhardened box is unsafe."
+        read -r -p "Continue anyway? [y/N]: " CONT
+        [[ "$CONT" =~ ^[Yy]$ ]] || die "Aborted. Run: bash harden-ssh.sh"
+    fi
+
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" || cc=""
+    if [ "$cc" = "bbr" ]; then
+        msg_ok "kernel: BBR active (phase1 contract holds)"
+    else
+        msg_warn "TCP congestion control is '${cc:-unknown}', not bbr - phase1 missing or its reboot skipped."
+        read -r -p "Continue anyway? [y/N]: " CONT
+        [[ "$CONT" =~ ^[Yy]$ ]] || die "Aborted. Run: bash phase1-kernel.sh"
+    fi
+}
+
+# Search /root and every /home/* for a pre-uploaded file; prints first match.
+find_artifact() {
+    local name="$1" candidate
+    for candidate in "/root/$name" "$USER_HOME/$name" /home/*/"$name"; do
+        if [ -f "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Block until a file's size stops changing (upload finished).
+wait_until_stable() {
+    local path="$1" s1 s2
+    while :; do
+        s1="$(stat -c%s "$path" 2>/dev/null)" || s1="x1"
+        sleep 2
+        s2="$(stat -c%s "$path" 2>/dev/null)" || s2="x2"
+        [ "$s1" = "$s2" ] && break
+    done
+    msg_ok "$path stable at $s1 bytes"
+}
+
+###############################################################################
 # --generate-config: output a template config file for pre-filling
 ###############################################################################
 if [ "${1:-}" = "--generate-config" ]; then
@@ -56,28 +140,21 @@ if [ "${1:-}" = "--generate-config" ]; then
     fi
     cat > "$TARGET" << 'TEMPLATE'
 # VPSAutoDeploy configuration file
-# Fill in all values below, then run: bash phase2-configure.sh
+# Fill in the values below, then run: bash phase2-deploy.sh
 # Lines starting with # are comments.
 #
-# Upload to VPS:  scp vpsautodeploy.conf root@<VPS_IP>:~/
-#            or:  scp vpsautodeploy.conf <user>@<VPS_IP>:~/
+# Identity (username, passwords, SSH port) is NOT configured here - phase0
+# and harden-ssh already own it, and phase2 detects it from the system.
+#
+# Upload to VPS:  scp vpsautodeploy.conf <user>@<VPS_IP>:~/
+#
+# Optional zero-touch artifacts (searched in /root and every /home/*):
+#   cf-fullchain.pem / cf-privkey.pem   Cloudflare origin cert for CDN_DOMAIN
+#   x-ui.db                             existing 3x-ui database to restore
+# Upload them together with this file and phase2 runs without any prompts:
+#   scp vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
 
 # ── Required fields (must fill in) ──────────────────────────────────
-
-# New Linux username
-# Format: lowercase letters, digits, underscore, hyphen; start with letter
-# Example: USERNAME=one
-USERNAME=
-
-# Password for the new user (any non-empty string)
-USER_PASSWORD=
-
-# New root password (any non-empty string)
-ROOT_PASSWORD=
-
-# Custom SSH port (range: 1024-65535, avoid common ports)
-# Example: SSH_PORT=48825
-SSH_PORT=
 
 # ACME registration email (for ZeroSSL certificate issuance)
 # Example: ACME_EMAIL=admin@example.com
@@ -97,9 +174,6 @@ CDN_DOMAIN=
 # Leave empty to auto-generate a random 32-character string
 XHTTP_PATH=
 
-# CLIProxyAPI location path (same format as above)
-CLIPROXY_PATH=
-
 # 3x-ui panel location path (same format as above)
 XUI_PANEL_PATH=
 
@@ -114,9 +188,9 @@ BACKEND_WEB=quarkus.io
 TEMPLATE
     chmod 600 "$TARGET"
     msg_ok "Config template generated at $TARGET"
-    msg_info "Edit the file, fill in all required values, then run:"
+    msg_info "Edit the file, fill in the required values, then run:"
     echo ""
-    echo "  bash phase2-configure.sh"
+    echo "  bash phase2-deploy.sh"
     echo ""
     msg_info "Or: edit locally and upload via SCP to any user's home directory:"
     echo ""
@@ -136,15 +210,17 @@ if [ "${1:-}" = "--status" ]; then
     echo "=========================================="
     echo ""
 
-    # Load config for display
+    detect_system
+    echo "  Detected: user=$USERNAME  ssh_port=$SSH_PORT"
+
     if load_config; then
         echo "  Config: $CONFIG_FILE"
         echo "  State:  $STATE_FILE"
         if [ -f "$STATE_FILE" ]; then
             echo "  Steps completed: $(wc -l < "$STATE_FILE")/$TOTAL_STEPS"
         fi
-        echo ""
     fi
+    echo ""
 
     for svc in ssh ufw nginx x-ui fail2ban; do
         printf "  %-14s " "$svc:"
@@ -162,17 +238,6 @@ if [ "${1:-}" = "--status" ]; then
             printf "${RED}inactive${NC}\n"
         fi
     done
-
-    # CLIProxyAPI (user service)
-    if load_config && id "$USERNAME" &>/dev/null; then
-        USER_UID=$(id -u "$USERNAME")
-        printf "  %-14s " "cliproxyapi:"
-        if sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user is-active --quiet cliproxyapi 2>/dev/null; then
-            printf "${GREEN}active${NC}\n"
-        else
-            printf "${RED}inactive${NC}\n"
-        fi
-    fi
 
     echo ""
 
@@ -224,7 +289,8 @@ if [ "${1:-}" = "--reset" ]; then
     echo "=========================================="
     echo ""
 
-    msg_warn "This will restore original config files and stop deployed services."
+    msg_warn "This stops deployed services and restores the files phase2 modified."
+    msg_info "NOT touched: SSH config (harden-ssh owns it). UFW stays enabled."
     read -r -p "Proceed? [y/N]: " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted."
 
@@ -239,9 +305,7 @@ if [ "${1:-}" = "--reset" ]; then
     # Restore backed up files
     if [ -d "$BACKUP_DIR" ]; then
         msg_info "Restoring backups from $BACKUP_DIR:"
-        restore_file "/etc/ssh/sshd_config"
-        restore_file "/etc/default/ufw"
-        systemctl restart ssh 2>/dev/null || true
+        restore_file "/nginx/conf/nginx.conf"
     else
         msg_warn "No backup directory found at $BACKUP_DIR"
     fi
@@ -260,9 +324,26 @@ fi
 
 echo ""
 echo "=========================================="
-echo "  Phase 2: Main VPS Configuration"
+echo "  Phase 2: Service Deployment"
 echo "=========================================="
 echo ""
+
+###############################################################################
+# Preflight: detect system facts, verify earlier phases, spot artifacts
+###############################################################################
+msg_step "Preflight"
+detect_system
+msg_ok "User: $USERNAME (home: $USER_HOME)"
+msg_ok "SSH port: $SSH_PORT"
+verify_hardening
+
+# Pre-uploaded artifacts (optional - they make the run zero-touch)
+for artifact in cf-fullchain.pem cf-privkey.pem x-ui.db; do
+    FOUND="$(find_artifact "$artifact")" || FOUND=""
+    if [ -n "$FOUND" ]; then
+        msg_ok "Found pre-uploaded $artifact: $FOUND"
+    fi
+done
 
 ###############################################################################
 # User input — load saved/pre-filled config or collect interactively
@@ -270,11 +351,6 @@ echo ""
 
 # validate_config: check all required fields are present and valid
 validate_config() {
-    validate_nonempty "USERNAME" "$USERNAME"
-    validate_username "$USERNAME"
-    validate_nonempty "USER_PASSWORD" "$USER_PASSWORD"
-    validate_nonempty "ROOT_PASSWORD" "$ROOT_PASSWORD"
-    validate_port "SSH_PORT" "$SSH_PORT"
     validate_email "$ACME_EMAIL"
     validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
     validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
@@ -285,10 +361,6 @@ validate_config() {
         XHTTP_PATH=$(generate_random_path 32)
     fi
     validate_path "XHTTP_PATH" "$XHTTP_PATH"
-    if [ -z "${CLIPROXY_PATH:-}" ]; then
-        CLIPROXY_PATH=$(generate_random_path 32)
-    fi
-    validate_path "CLIPROXY_PATH" "$CLIPROXY_PATH"
     if [ -z "${XUI_PANEL_PATH:-}" ]; then
         XUI_PANEL_PATH=$(generate_random_path 32)
     fi
@@ -297,13 +369,12 @@ validate_config() {
 
 show_config_summary() {
     msg_info "Configuration summary:"
-    echo "  USERNAME       = $USERNAME"
-    echo "  SSH_PORT       = $SSH_PORT"
+    echo "  USERNAME       = $USERNAME (detected)"
+    echo "  SSH_PORT       = $SSH_PORT (detected)"
     echo "  ACME_EMAIL     = $ACME_EMAIL"
     echo "  DIRECT_DOMAIN  = $DIRECT_DOMAIN"
     echo "  CDN_DOMAIN     = $CDN_DOMAIN"
     echo "  XHTTP_PATH     = $XHTTP_PATH"
-    echo "  CLIPROXY_PATH  = $CLIPROXY_PATH"
     echo "  XUI_PANEL_PATH = $XUI_PANEL_PATH"
     echo "  XUI_PANEL_PORT = $XUI_PANEL_PORT"
     echo "  BACKEND_WEB    = $BACKEND_WEB"
@@ -311,16 +382,18 @@ show_config_summary() {
 
 if load_config; then
     msg_ok "Loaded configuration from $CONFIG_FILE"
+    validate_config
     echo ""
     show_config_summary
     echo ""
-    read -r -p "Use this config? [Y/n]: " USE_SAVED
-    if [[ "$USE_SAVED" =~ ^[Nn]$ ]]; then
+    # Auto-continue after 10s so a pre-uploaded config stays zero-touch.
+    read -r -t 10 -p "Use this config? [Y/n] (auto-yes in 10s): " USE_SAVED || USE_SAVED=""
+    if [ -z "${USE_SAVED:-}" ]; then echo ""; fi
+    if [[ "${USE_SAVED:-}" =~ ^[Nn]$ ]]; then
         rm -f "$CONFIG_FILE" "$STATE_FILE"
         msg_info "Cleared saved config and state. Starting fresh."
         exec "$0" "$@"
     fi
-    validate_config
     # Re-save to normalize (auto-generated paths, stripped comments)
     save_config
 else
@@ -335,10 +408,9 @@ else
         echo ""
         msg_info "Upload vpsautodeploy.conf to any user's home directory:"
         echo ""
-        echo "  scp vpsautodeploy.conf root@<VPS_IP>:~/"
-        echo "  scp vpsautodeploy.conf <user>@<VPS_IP>:~/"
+        echo "  scp -P $SSH_PORT vpsautodeploy.conf $USERNAME@<VPS_IP>:~/"
         echo ""
-        msg_info "Tip: generate a template first with: bash phase2-configure.sh --generate-config"
+        msg_info "Tip: generate a template first with: bash phase2-deploy.sh --generate-config"
         echo ""
         msg_info "Waiting for vpsautodeploy.conf to appear..."
 
@@ -347,29 +419,16 @@ else
         done
 
         msg_ok "Config file loaded from $CONFIG_FILE"
+        validate_config
         echo ""
         show_config_summary
         echo ""
-        msg_warn "Make sure the file transfer is FULLY COMPLETE before continuing."
         read -r -p "Confirm config is correct? Press Enter to continue (or Ctrl+C to abort)..."
-        validate_config
         save_config
     else
         msg_info "Collecting parameters interactively..."
         msg_info "(Tip: run with --generate-config to create a template file instead)"
         echo ""
-
-        prompt_value "New Linux username" ""
-        USERNAME="$REPLY"; validate_username "$USERNAME"
-
-        prompt_password "Password for $USERNAME"
-        USER_PASSWORD="$REPLY"; validate_nonempty "USER_PASSWORD" "$USER_PASSWORD"
-
-        prompt_password "New root password"
-        ROOT_PASSWORD="$REPLY"; validate_nonempty "ROOT_PASSWORD" "$ROOT_PASSWORD"
-
-        prompt_value "Custom SSH port" "2222"
-        SSH_PORT="$REPLY"; validate_port "SSH_PORT" "$SSH_PORT"
 
         prompt_value "ACME registration email" ""
         ACME_EMAIL="$REPLY"; validate_email "$ACME_EMAIL"
@@ -383,10 +442,6 @@ else
         DEFAULT_XHTTP=$(generate_random_path 32)
         prompt_value "XHTTP location path" "$DEFAULT_XHTTP"
         XHTTP_PATH="$REPLY"; validate_path "XHTTP_PATH" "$XHTTP_PATH"
-
-        DEFAULT_CLIPROXY=$(generate_random_path 32)
-        prompt_value "CLIProxyAPI location path" "$DEFAULT_CLIPROXY"
-        CLIPROXY_PATH="$REPLY"; validate_path "CLIPROXY_PATH" "$CLIPROXY_PATH"
 
         DEFAULT_XUI_PATH=$(generate_random_path 32)
         prompt_value "3x-ui panel location path" "$DEFAULT_XUI_PATH"
@@ -416,85 +471,11 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 ###############################################################################
-# Step 1: Disable virtio_balloon
+# Step 1: UFW firewall
 ###############################################################################
-if ! is_done "step1"; then
-    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon"
-    if lsmod | grep -q balloon; then
-        echo "blacklist virtio_balloon" | tee /etc/modprobe.d/blacklist-balloon.conf
-        update-initramfs -u
-        msg_ok "virtio_balloon blacklisted"
-    else
-        msg_info "virtio_balloon not loaded, skipping"
-    fi
-    mark_done "step1"
-else
-    msg_step "1/$TOTAL_STEPS: Disable virtio_balloon — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 4: Create user + set passwords
-###############################################################################
-if ! is_done "step2"; then
-    msg_step "2/$TOTAL_STEPS: Create user and set passwords"
-    if id "$USERNAME" &>/dev/null; then
-        msg_info "User $USERNAME already exists, updating passwords"
-    else
-        useradd -m -G sudo -s /bin/bash "$USERNAME"
-    fi
-    echo "$USERNAME:$USER_PASSWORD" | chpasswd
-    echo "root:$ROOT_PASSWORD" | chpasswd
-    msg_ok "User $USERNAME ready, passwords set"
-    mark_done "step2"
-else
-    msg_step "2/$TOTAL_STEPS: Create user and set passwords — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 4: SSH initial hardening
-###############################################################################
-if ! is_done "step3"; then
-    msg_step "3/$TOTAL_STEPS: SSH initial hardening"
-    SSHD_CONFIG="/etc/ssh/sshd_config"
-    SSHD_CONF_DIR="/etc/ssh/sshd_config.d"
-    backup_file "$SSHD_CONFIG"
-
-    # Remove any drop-in overrides that might conflict (e.g., CloudCone's 01-permitrootlogin.conf)
-    if [ -d "$SSHD_CONF_DIR" ]; then
-        for f in "$SSHD_CONF_DIR"/*.conf; do
-            [ -f "$f" ] || continue
-            backup_file "$f"
-            rm -f "$f"
-            msg_info "Removed conflicting drop-in: $f"
-        done
-    fi
-
-    if grep -q "^#\?Port " "$SSHD_CONFIG"; then
-        sed -i "s/^#\?Port .*/Port $SSH_PORT/" "$SSHD_CONFIG"
-    else
-        echo "Port $SSH_PORT" >> "$SSHD_CONFIG"
-    fi
-
-    if grep -q "^#\?PermitRootLogin " "$SSHD_CONFIG"; then
-        sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$SSHD_CONFIG"
-    else
-        echo "PermitRootLogin prohibit-password" >> "$SSHD_CONFIG"
-    fi
-
-    systemctl restart ssh
-    msg_ok "SSH configured: Port=$SSH_PORT, PermitRootLogin=prohibit-password"
-    mark_done "step3"
-else
-    msg_step "3/$TOTAL_STEPS: SSH initial hardening — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 5: UFW firewall
-###############################################################################
-if ! is_done "step4"; then
-    msg_step "4/$TOTAL_STEPS: Configure UFW firewall"
+if ! is_done "ufw"; then
+    msg_step "1/$TOTAL_STEPS: Configure UFW firewall"
     apt install -y ufw
-    backup_file "/etc/default/ufw"
     # Debian default IPV6=yes — no need to change.
     # "default deny incoming" blocks all inbound (v4+v6), then allow rules whitelist specific ports.
     # Allow rules use "from 0.0.0.0/0" so only IPv4 inbound is whitelisted; IPv6 inbound stays denied.
@@ -507,16 +488,16 @@ if ! is_done "step4"; then
     ufw allow proto udp from 0.0.0.0/0 to any port 443
     ufw --force enable
     msg_ok "UFW enabled: SSH($SSH_PORT)/80/443(tcp+udp) allowed, IPv4 only"
-    mark_done "step4"
+    mark_done "ufw"
 else
-    msg_step "4/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
+    msg_step "1/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 6: Deploy custom-built Nginx
+# Step 2: Deploy custom-built Nginx
 ###############################################################################
-if ! is_done "step5"; then
-    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx"
+if ! is_done "nginx"; then
+    msg_step "2/$TOTAL_STEPS: Deploy custom-built Nginx"
     NGINX_URL="https://github.com/FinalisNothing/nginx-build/releases/latest/download/nginx-root.tar.gz"
     msg_info "Downloading nginx from GitHub Release..."
     curl -fLo /tmp/nginx-root.tar.gz "$NGINX_URL" \
@@ -532,53 +513,63 @@ if ! is_done "step5"; then
     chown -R "$USERNAME":nogroup /nginx/acme_challenge
     chmod 750 /nginx/acme_challenge/.well-known/acme-challenge
     msg_ok "Nginx permissions configured"
-    mark_done "step5"
+    mark_done "nginx"
 else
-    msg_step "5/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
+    msg_step "2/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 7: Install jemalloc (for nginx only — Go binaries ignore LD_PRELOAD)
+# Step 3: Install jemalloc (for nginx only — Go binaries ignore LD_PRELOAD)
 ###############################################################################
-if ! is_done "step6"; then
-    msg_step "6/$TOTAL_STEPS: Install jemalloc"
+if ! is_done "jemalloc"; then
+    msg_step "3/$TOTAL_STEPS: Install jemalloc"
     apt install -y libjemalloc2
-    mark_done "step6"
+    mark_done "jemalloc"
 else
-    msg_step "6/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
+    msg_step "3/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
 fi
-# Always resolve path (needed by step 7)
+# Always resolve path (needed by the service step on every run)
 JEMALLOC_PATH=$(find /usr/lib -name "libjemalloc.so*" | head -1)
 [ -n "$JEMALLOC_PATH" ] || die "Could not find libjemalloc.so"
 msg_ok "jemalloc at $JEMALLOC_PATH"
 
 ###############################################################################
-# Step 8: Create nginx.service (with jemalloc LD_PRELOAD)
+# Step 4: Create nginx.service (with jemalloc LD_PRELOAD)
 ###############################################################################
-if ! is_done "step7"; then
-    msg_step "7/$TOTAL_STEPS: Create nginx systemd service"
+if ! is_done "nginx-service"; then
+    msg_step "4/$TOTAL_STEPS: Create nginx systemd service"
     render_template "$SCRIPT_DIR/templates/nginx.service" \
         /etc/systemd/system/nginx.service \
         "JEMALLOC_PATH=$JEMALLOC_PATH"
     systemctl daemon-reload
     systemctl enable nginx
     msg_ok "nginx.service installed and enabled"
-    mark_done "step7"
+    mark_done "nginx-service"
 else
-    msg_step "7/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
+    msg_step "4/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 9: ACME certificate
+# Step 5: ACME certificate
 ###############################################################################
-if ! is_done "step8"; then
-    msg_step "8/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
+if ! is_done "acme"; then
+    msg_step "5/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
 
     # Check if cert already exists (e.g., from a previous partial run)
     CERT_FILE="/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/fullchain.pem"
     if [ -f "$CERT_FILE" ]; then
         msg_info "Certificate already exists at $CERT_FILE, skipping issuance"
     else
+        # A-record sanity check: http-01 fails if DNS does not point here yet.
+        # Only blocks when a mismatch is proven; unknown IPs pass silently.
+        VPS_IP="$(curl -fsS4 --max-time 10 https://api.ipify.org 2>/dev/null)" || VPS_IP=""
+        DOMAIN_IP="$(getent ahostsv4 "$DIRECT_DOMAIN" 2>/dev/null | awk '{print $1; exit}')" || DOMAIN_IP=""
+        if [ -n "$VPS_IP" ] && [ -n "$DOMAIN_IP" ] && [ "$VPS_IP" != "$DOMAIN_IP" ]; then
+            msg_warn "$DIRECT_DOMAIN resolves to $DOMAIN_IP but this VPS looks like $VPS_IP."
+            read -r -p "Issue the certificate anyway? [y/N]: " CONT
+            [[ "$CONT" =~ ^[Yy]$ ]] || die "Fix the DNS A record, then re-run."
+        fi
+
         render_template "$SCRIPT_DIR/templates/nginx-temp.conf.template" \
             /nginx/conf/nginx.conf \
             "DIRECT_DOMAIN=$DIRECT_DOMAIN"
@@ -606,99 +597,92 @@ if ! is_done "step8"; then
     fi
 
     msg_ok "ACME certificate ready for $DIRECT_DOMAIN"
-    mark_done "step8"
+    mark_done "acme"
 else
-    msg_step "8/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
+    msg_step "5/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 10: Cloudflare origin certificate (user paste)
+# Step 6: Cloudflare origin certificate (pre-uploaded file or paste)
 ###############################################################################
-if ! is_done "step9"; then
-    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
-    mkdir -p "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
+if ! is_done "cdn-cert"; then
+    msg_step "6/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
+    CERT_DIR="/home/$USERNAME/xray_cert/$CDN_DOMAIN"
+    mkdir -p "$CERT_DIR"
 
-    echo ""
-    msg_info "Paste the fullchain.pem for $CDN_DOMAIN (Cloudflare origin cert)."
-    msg_info "End with a line containing only 'EOF':"
-    echo ""
-    CF_CERT=""
-    while IFS= read -r line; do
-        [ "$line" = "EOF" ] && break
-        CF_CERT="${CF_CERT}${line}"$'\n'
-    done
-    printf '%s' "$CF_CERT" > "/home/$USERNAME/xray_cert/$CDN_DOMAIN/fullchain.pem"
+    CF_CERT_SRC="$(find_artifact cf-fullchain.pem)" || CF_CERT_SRC=""
+    CF_KEY_SRC="$(find_artifact cf-privkey.pem)" || CF_KEY_SRC=""
 
-    echo ""
-    msg_info "Paste the privkey.pem for $CDN_DOMAIN (Cloudflare origin key)."
-    msg_info "End with a line containing only 'EOF':"
-    echo ""
-    CF_KEY=""
-    while IFS= read -r line; do
-        [ "$line" = "EOF" ] && break
-        CF_KEY="${CF_KEY}${line}"$'\n'
-    done
-    printf '%s' "$CF_KEY" > "/home/$USERNAME/xray_cert/$CDN_DOMAIN/privkey.pem"
+    if [ -n "$CF_CERT_SRC" ] && [ -n "$CF_KEY_SRC" ]; then
+        msg_info "Using pre-uploaded origin cert: $CF_CERT_SRC + $CF_KEY_SRC"
+        wait_until_stable "$CF_CERT_SRC"
+        wait_until_stable "$CF_KEY_SRC"
+        # mv, not cp: don't leave a stray private key in a home directory
+        mv "$CF_CERT_SRC" "$CERT_DIR/fullchain.pem"
+        mv "$CF_KEY_SRC" "$CERT_DIR/privkey.pem"
+    else
+        echo ""
+        msg_info "Paste the fullchain.pem for $CDN_DOMAIN (Cloudflare origin cert)."
+        msg_info "End with a line containing only 'EOF':"
+        echo ""
+        CF_CERT=""
+        while IFS= read -r line; do
+            [ "$line" = "EOF" ] && break
+            CF_CERT="${CF_CERT}${line}"$'\n'
+        done
+        printf '%s' "$CF_CERT" > "$CERT_DIR/fullchain.pem"
 
-    msg_ok "Cloudflare origin cert saved for $CDN_DOMAIN"
-    mark_done "step9"
+        echo ""
+        msg_info "Paste the privkey.pem for $CDN_DOMAIN (Cloudflare origin key)."
+        msg_info "End with a line containing only 'EOF':"
+        echo ""
+        CF_KEY=""
+        while IFS= read -r line; do
+            [ "$line" = "EOF" ] && break
+            CF_KEY="${CF_KEY}${line}"$'\n'
+        done
+        printf '%s' "$CF_KEY" > "$CERT_DIR/privkey.pem"
+    fi
+
+    openssl x509 -noout -in "$CERT_DIR/fullchain.pem" 2>/dev/null \
+        || die "$CERT_DIR/fullchain.pem is not a valid certificate. Re-run this step."
+    openssl pkey -noout -in "$CERT_DIR/privkey.pem" 2>/dev/null \
+        || die "$CERT_DIR/privkey.pem is not a valid private key. Re-run this step."
+
+    msg_ok "Cloudflare origin cert installed for $CDN_DOMAIN"
+    mark_done "cdn-cert"
 else
-    msg_step "9/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
+    msg_step "6/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 11: Certificate directory permissions
+# Step 7: Certificate directory permissions
 ###############################################################################
-if ! is_done "step10"; then
-    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions"
-    grep -qF "umask 0077" /root/.bashrc || echo "umask 0077" >> /root/.bashrc
+if ! is_done "cert-perms"; then
+    msg_step "7/$TOTAL_STEPS: Set certificate directory permissions"
     chmod 700 "/home/$USERNAME/xray_cert"
     chmod 700 "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN"
     chmod 700 "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
     chmod 600 "/home/$USERNAME/xray_cert"/*/*.pem
     msg_ok "Certificate permissions locked down"
-    mark_done "step10"
+    mark_done "cert-perms"
 else
-    msg_step "10/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
+    msg_step "7/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 12: Generate cloudflare-ips.geo
+# Step 8: Cloudflare geo + final nginx.conf
 ###############################################################################
-if ! is_done "step11"; then
-    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo"
-    CF_V4_URL="https://www.cloudflare.com/ips-v4"
-    CF_V6_URL="https://www.cloudflare.com/ips-v6"
-    NGINX_GEO="/nginx/conf/cloudflare-ips.geo"
+if ! is_done "nginx-conf"; then
+    msg_step "8/$TOTAL_STEPS: Cloudflare geo + final nginx.conf"
 
-    CF_TMPDIR="$(mktemp -d)"
-    curl -fsS --connect-timeout 10 --max-time 30 "$CF_V4_URL" > "$CF_TMPDIR/v4.txt"
-    curl -fsS --connect-timeout 10 --max-time 30 "$CF_V6_URL" > "$CF_TMPDIR/v6.txt"
+    # The updater owns cloudflare-ips.geo (and later the fail2ban ignoreip).
+    # fail2ban is not installed yet - the updater skips that target for now;
+    # fail2ban/deploy.sh runs it again in step 11.
+    install -o root -g root -m 700 "$SCRIPT_DIR/fail2ban/update-cloudflare-ips.sh" \
+        /usr/local/bin/update-cloudflare-ips.sh
+    /usr/local/bin/update-cloudflare-ips.sh
 
-    {
-        echo "# Cloudflare IP ranges - auto-generated $(date -Iseconds)"
-        while IFS= read -r cidr; do
-            [ -n "$cidr" ] && echo "$cidr 1;"
-        done < "$CF_TMPDIR/v4.txt"
-        while IFS= read -r cidr; do
-            [ -n "$cidr" ] && echo "$cidr 1;"
-        done < "$CF_TMPDIR/v6.txt"
-    } > "$NGINX_GEO"
-
-    chown root:root "$NGINX_GEO"
-    chmod 644 "$NGINX_GEO"
-    rm -rf "$CF_TMPDIR"
-    msg_ok "cloudflare-ips.geo generated"
-    mark_done "step11"
-else
-    msg_step "11/$TOTAL_STEPS: Generate cloudflare-ips.geo — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 13: Deploy final nginx.conf
-###############################################################################
-if ! is_done "step12"; then
-    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf"
     systemctl stop nginx || true
     backup_file "/nginx/conf/nginx.conf"
 
@@ -708,7 +692,6 @@ if ! is_done "step12"; then
         "CDN_DOMAIN=$CDN_DOMAIN" \
         "USERNAME=$USERNAME" \
         "XHTTP_PATH=$XHTTP_PATH" \
-        "CLIPROXY_PATH=$CLIPROXY_PATH" \
         "XUI_PANEL_PATH=$XUI_PANEL_PATH" \
         "XUI_PANEL_PORT=$XUI_PANEL_PORT" \
         "BACKEND_WEB=$BACKEND_WEB"
@@ -717,163 +700,72 @@ if ! is_done "step12"; then
     chmod 600 /nginx/conf/nginx.conf
     /nginx/sbin/nginx -t || die "nginx config test failed"
     systemctl start nginx
-    msg_ok "Final nginx.conf deployed and nginx restarted"
-    mark_done "step12"
+    msg_ok "cloudflare-ips.geo generated, final nginx.conf deployed, nginx running"
+    mark_done "nginx-conf"
 else
-    msg_step "12/$TOTAL_STEPS: Deploy final nginx.conf — SKIPPED (done)"
+    msg_step "8/$TOTAL_STEPS: Cloudflare geo + final nginx.conf — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 14: Deploy Fail2ban
+# Step 9: Install 3x-ui
 ###############################################################################
-if ! is_done "step13"; then
-    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban"
-    FAIL2BAN_DIR="$SCRIPT_DIR/fail2ban"
-    if [ ! -d "$FAIL2BAN_DIR" ]; then
-        msg_info "Cloning fail2ban config from repository..."
-        git clone --depth 1 https://github.com/FinalisNothing/VPSAutoConfig.git /tmp/vpsautoconfig-tmp
-        FAIL2BAN_DIR="/tmp/vpsautoconfig-tmp/fail2ban"
-    fi
-    SSH_PORT="$SSH_PORT" bash "$FAIL2BAN_DIR/deploy.sh"
-    msg_ok "Fail2ban deployed"
-    mark_done "step13"
-else
-    msg_step "13/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 15: Install 3x-ui
-###############################################################################
-if ! is_done "step14"; then
-    msg_step "14/$TOTAL_STEPS: Install 3x-ui"
+if ! is_done "xui"; then
+    msg_step "9/$TOTAL_STEPS: Install 3x-ui"
     curl -Ls -o /tmp/x-ui-install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
     sed -i 's/^[[:space:]]*config_after_install$/#config_after_install/' /tmp/x-ui-install.sh
     bash /tmp/x-ui-install.sh
     msg_ok "3x-ui installed (interactive config skipped)"
-    mark_done "step14"
+    mark_done "xui"
 else
-    msg_step "14/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
+    msg_step "9/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 16: Replace x-ui.db
+# Step 10: Restore x-ui.db
 ###############################################################################
-if ! is_done "step15"; then
-    msg_step "15/$TOTAL_STEPS: Replace x-ui.db"
+if ! is_done "xui-db"; then
+    msg_step "10/$TOTAL_STEPS: Restore x-ui.db"
 
-    # Search for x-ui.db in common locations
-    DB_SOURCE=""
-    for candidate in "/home/$USERNAME/x-ui.db" "/root/x-ui.db" /home/*/x-ui.db; do
-        if [ -f "$candidate" ]; then
-            DB_SOURCE="$candidate"
-            break
-        fi
-    done
+    DB_SOURCE="$(find_artifact x-ui.db)" || DB_SOURCE=""
 
-    if [ -n "$DB_SOURCE" ]; then
-        msg_ok "Found x-ui.db at $DB_SOURCE"
-    else
+    if [ -z "$DB_SOURCE" ]; then
         echo ""
         msg_info "Upload your x-ui.db to the VPS from another terminal:"
-        msg_info "(Note: root password login is disabled; use the $USERNAME account)"
+        msg_info "(Note: root login is disabled; use the $USERNAME account)"
         echo ""
         echo "  scp -P $SSH_PORT x-ui.db $USERNAME@<VPS_IP>:~/"
         echo ""
-        msg_info "Waiting for x-ui.db to appear..."
-
+        msg_info "Waiting for x-ui.db to appear (Ctrl+C to abort)..."
         while [ -z "$DB_SOURCE" ]; do
-            for candidate in "/home/$USERNAME/x-ui.db" "/root/x-ui.db" /home/*/x-ui.db; do
-                if [ -f "$candidate" ]; then
-                    DB_SOURCE="$candidate"
-                    break
-                fi
-            done
-            [ -z "$DB_SOURCE" ] && sleep 2
+            sleep 2
+            DB_SOURCE="$(find_artifact x-ui.db)" || DB_SOURCE=""
         done
-
-        msg_ok "File detected: $DB_SOURCE"
     fi
 
-    echo ""
-    msg_warn "Make sure the file transfer is FULLY COMPLETE before continuing."
-    msg_info "File size: $(stat -c%s "$DB_SOURCE" 2>/dev/null || echo unknown) bytes"
-    echo ""
-    read -r -p "Is the upload finished? Press Enter to continue (or Ctrl+C to abort)..."
+    msg_ok "Found x-ui.db at $DB_SOURCE"
+    msg_info "Waiting for the upload to finish (size must stop changing)..."
+    wait_until_stable "$DB_SOURCE"
 
     systemctl stop x-ui
     cp "$DB_SOURCE" /etc/x-ui/x-ui.db
     /usr/local/x-ui/x-ui migrate
     systemctl start x-ui
-    msg_ok "x-ui.db replaced, migrated, and x-ui restarted"
-    mark_done "step15"
+    msg_ok "x-ui.db restored, migrated, and x-ui restarted"
+    mark_done "xui-db"
 else
-    msg_step "15/$TOTAL_STEPS: Replace x-ui.db — SKIPPED (done)"
+    msg_step "10/$TOTAL_STEPS: Restore x-ui.db — SKIPPED (done)"
 fi
 
 ###############################################################################
-# Step 17: Install CLIProxyAPI
+# Step 11: Deploy Fail2ban
 ###############################################################################
-if ! is_done "step16"; then
-    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI"
-    loginctl enable-linger "$USERNAME"
-    sudo -u "$USERNAME" bash -c 'curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash'
-    # Installer creates the service file but doesn't enable/start it
-    USER_UID=$(id -u "$USERNAME")
-    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user enable cliproxyapi.service
-    sudo -u "$USERNAME" XDG_RUNTIME_DIR="/run/user/$USER_UID" systemctl --user start cliproxyapi.service
-    msg_ok "CLIProxyAPI installed and service started"
-    mark_done "step16"
+if ! is_done "fail2ban"; then
+    msg_step "11/$TOTAL_STEPS: Deploy Fail2ban"
+    SSH_PORT="$SSH_PORT" bash "$SCRIPT_DIR/fail2ban/deploy.sh"
+    msg_ok "Fail2ban deployed"
+    mark_done "fail2ban"
 else
-    msg_step "16/$TOTAL_STEPS: Install CLIProxyAPI — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 18: SSH Key authentication
-###############################################################################
-if ! is_done "step17"; then
-    msg_step "17/$TOTAL_STEPS: SSH Key authentication"
-    echo ""
-    msg_info "On your LOCAL machine (PowerShell), generate an SSH key if you haven't:"
-    echo ""
-    echo "  ssh-keygen -t ed25519"
-    echo ""
-    msg_info "Paste your PUBLIC key (id_ed25519.pub contents):"
-    read -r SSH_PUBKEY
-    validate_nonempty "SSH public key" "$SSH_PUBKEY"
-
-    USER_HOME="/home/$USERNAME"
-    mkdir -p "$USER_HOME/.ssh"
-    echo "$SSH_PUBKEY" > "$USER_HOME/.ssh/authorized_keys"
-    chown -R "$USERNAME":"$USERNAME" "$USER_HOME/.ssh"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-
-    SSHD_CONFIG="/etc/ssh/sshd_config"
-    backup_file "$SSHD_CONFIG"
-
-    if grep -q "^#\?PubkeyAuthentication " "$SSHD_CONFIG"; then
-        sed -i "s/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/" "$SSHD_CONFIG"
-    else
-        echo "PubkeyAuthentication yes" >> "$SSHD_CONFIG"
-    fi
-
-    if grep -q "^#\?AuthorizedKeysFile " "$SSHD_CONFIG"; then
-        sed -i "s|^#\?AuthorizedKeysFile .*|AuthorizedKeysFile .ssh/authorized_keys|" "$SSHD_CONFIG"
-    else
-        echo "AuthorizedKeysFile .ssh/authorized_keys" >> "$SSHD_CONFIG"
-    fi
-
-    if grep -q "^#\?PasswordAuthentication " "$SSHD_CONFIG"; then
-        sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$SSHD_CONFIG"
-    else
-        echo "PasswordAuthentication no" >> "$SSHD_CONFIG"
-    fi
-
-    systemctl restart ssh
-    msg_ok "SSH key authentication configured, password login disabled"
-    mark_done "step17"
-else
-    msg_step "17/$TOTAL_STEPS: SSH Key authentication — SKIPPED (done)"
+    msg_step "11/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
 fi
 
 ###############################################################################
@@ -882,29 +774,24 @@ fi
 
 echo ""
 echo "=========================================="
-echo "  Phase 2: Configuration Complete!"
+echo "  Phase 2: Deployment Complete!"
 echo "=========================================="
-echo ""
-msg_warn "IMPORTANT: Before closing this terminal, open a NEW terminal and test:"
-echo ""
-echo "  ssh -i ~/.ssh/id_ed25519 $USERNAME@<VPS_IP> -p $SSH_PORT"
-echo ""
-msg_warn "Only close this session after confirming key-based login works!"
 echo ""
 msg_info "Your services:"
 echo "  3x-ui panel : https://$DIRECT_DOMAIN/$XUI_PANEL_PATH/"
-echo "  CLIProxyAPI : https://$DIRECT_DOMAIN/$CLIPROXY_PATH/"
 echo "  XHTTP path  : /$XHTTP_PATH"
 echo ""
+msg_info "Login/SSH were not touched — phase0 and harden-ssh own them."
+echo ""
 msg_info "Useful commands:"
-echo "  bash phase2-configure.sh --status           # Show all service status"
-echo "  bash phase2-configure.sh --reset            # Restore backups, stop services"
-echo "  bash phase2-configure.sh --generate-config  # Generate config template"
+echo "  bash phase2-deploy.sh --status              # Show all service status"
+echo "  bash phase2-deploy.sh --reset               # Restore backups, stop services"
+echo "  bash phase2-deploy.sh --generate-config     # Generate config template"
 echo "  ufw status                                  # Check firewall"
 echo "  fail2ban-client status                      # Check fail2ban jails"
 echo ""
 msg_info "State files (safe to delete after successful deployment):"
-echo "  $CONFIG_FILE   # Saved inputs"
+echo "  $CONFIG_FILE   # Saved inputs (service parameters, no credentials)"
 echo "  $STATE_FILE    # Completed steps"
 echo "  $BACKUP_DIR/   # Config backups"
 echo ""
