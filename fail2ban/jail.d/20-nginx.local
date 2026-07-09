@@ -1,0 +1,164 @@
+# /etc/fail2ban/jail.d/20-nginx.local
+# Nginx jails. Architecture: Xray(M+H+K+A) + Nginx + UFW
+# ============================================================
+#
+# Traffic paths:
+#   a.domain.com (CF proxied)  -> CF edge -> TCP 443 -> Xray -> UDS -> Nginx
+#   b.domain.com (DNS only)    -> TCP 443 -> Xray -> UDS -> Nginx
+#   b.domain.com (DNS only)    -> UDP 443 -> Nginx (QUIC direct)
+#   b.domain.com (DNS only)    -> TCP 80  -> Nginx (HTTP direct)
+#
+# Which IP appears in the logs:
+#   access.log first field is $client_ip:
+#     - via CF:  the user's real IP (extracted from CF-Connecting-IP)
+#     - direct:  the client's real IP
+#   error.log "client:" field is $remote_addr:
+#     - via CF:  the CF edge IP (from PROXY protocol)
+#     - direct:  the client's real IP
+#
+# What fail2ban + UFW can and cannot block:
+#   - direct b.domain.com / SSH -> fully effective
+#   - CF-proxied a.domain.com   -> UFW cannot block it (traffic arrives from
+#     CF edge IPs); protect proxied traffic in the Cloudflare dashboard
+#     (WAF / rate limiting) instead.
+#
+# CF ranges MUST stay in ignoreip (01-ignoreip.local, generated): some
+# error.log lines record CF edge IPs, and banning one cuts ALL CDN traffic.
+# Also note: early TLS errors on the UDS path are logged as "client: unix:"
+# and contain no bannable public IP at all.
+# ============================================================
+
+# --- Bad Requests (400) ---
+# Catches: empty requests, binary garbage, malformed HTTP,
+# protocol probing (non-HTTP on port 80/443). Stock filter.
+# Log source: access log (uses $client_ip = real IP)
+[nginx-bad-request]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 3
+findtime = 1d
+bantime  = 1d
+
+# --- Bot/Scanner Search ---
+# Catches: 404 requests for /wp-admin, /phpmyadmin, /cgi-bin, etc.
+# Stock filter; pattern list extended via filter.d/botsearch-common.local.
+# Log source: access log (uses $client_ip = real IP)
+[nginx-botsearch]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 5
+findtime = 10m
+bantime  = 24h
+
+# --- HTTP Auth Failures ---
+# DISABLED: this architecture has no HTTP Basic Auth, nginx never produces
+# these log lines. Flip to true if a location gains basic auth some day.
+# Log source: error log (CF traffic logs the CF edge IP there; ignoreip covers it)
+[nginx-http-auth]
+enabled  = false
+port     = http,https
+mode     = aggressive
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# --- Rate Limit Violations ---
+# Catches: IPs exceeding nginx limit_req thresholds. The nginx.conf template
+# ships the limit_req_zone and per-location limit_req this jail depends on.
+# NOTE: the limit_req zone key is $client_ip (real IP), but the error.log
+# "client:" field is $remote_addr - for CF traffic that is a CF edge IP,
+# which is in ignoreip, so CDN traffic cannot be false-banned.
+# Log source: error log
+[nginx-limit-req]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/error.log
+maxretry = 30
+findtime = 1m
+bantime  = 1h
+
+# --- Forbidden Access ---
+# Catches: requests denied by the template's "deny all" locations
+# (/.env, /.git, hidden files, known vulnerability paths).
+# Log source: error log (CF traffic logs the CF edge IP there; ignoreip covers it)
+[nginx-forbidden]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 24h
+
+# --- SSL Handshake Errors ---
+# Effective for UDP 443 QUIC direct connections (error.log "client:" is the
+# real client IP). Mostly ineffective for TCP 443 via Xray/UDS, where early
+# TLS errors log "client: unix:" (no bannable IP). Kept enabled: it still
+# guards the QUIC path and cannot false-ban.
+[nginx-sslerror]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/error.log
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# --- Path Scanning / Vulnerability Probing ---
+# Catches: requests for known sensitive paths (.env, wp-config.php,
+# actuator, swagger, ...) answered with 4xx or the port-80 301 redirect.
+# maxretry=1 + bantime=1w is a DELIBERATE one-strike policy: nobody
+# legitimate browses these domains, so even generic tokens (/debug,
+# /backup, /query, ...) and a single port-80 redirect are treated as
+# conclusive. Revisit if the disguise site ever gets real human traffic.
+# Log source: access log (uses $client_ip = real IP)
+[nginx-path-scan]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- Protocol Probing (non-HTTP on HTTP ports) ---
+# Catches: binary data, CONNECT, SSTP, PROPFIND, RTSP, SSH-2.0, RDP,
+# MongoDB/Redis probes, etc. 100% malicious - no legitimate client sends
+# these to HTTP ports; a single occurrence is conclusive (maxretry=1).
+# Log source: access log (uses $client_ip = real IP)
+[nginx-protocol-probe]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- Known Malicious Scanner User-Agents ---
+# Catches: zgrab, Nuclei, masscan, sqlmap, gobuster, python-requests, Wget,
+# etc. On these domains no legitimate automation exists, so a single request
+# with a scanner UA is conclusive (maxretry=1).
+# Log source: access log (uses $client_ip = real IP)
+[nginx-scanner-ua]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 1
+findtime = 1d
+bantime  = 1w
+
+# --- 4xx Error Flood ---
+# Volume-based catch-all for scanners, directory brute-force, credential
+# stuffing. The normal proxy path returns 200 and never trips this; a
+# misconfigured Xray client retrying a wrong path CAN - maxretry=15/min
+# leaves headroom so debugging your own client does not ban your carrier
+# NAT IP. Real dirbusters do hundreds of requests per second and are caught
+# earlier by the deny rules and path-scan anyway.
+# Log source: access log (uses $client_ip = real IP)
+[nginx-4xx-flood]
+enabled  = true
+port     = http,https
+logpath  = /nginx/logs/access.log
+maxretry = 15
+findtime = 1m
+bantime  = 1h

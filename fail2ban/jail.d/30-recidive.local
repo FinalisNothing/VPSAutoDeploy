@@ -1,0 +1,16 @@
+# /etc/fail2ban/jail.d/30-recidive.local
+# Escalation: an IP banned 3 times by ANY jail within 1 day gets 1 week.
+#
+# banaction resolves to ufw: the stock [recidive] jail uses
+# %(banaction_allports)s, which 00-default.local sets to ufw (the ufw
+# action already blocks all ports).
+#
+# /var/log/fail2ban.log is written by fail2ban itself (fail2ban.conf
+# logtarget) - no rsyslog involved, safe on minimal Debian 13.
+
+[recidive]
+enabled  = true
+logpath  = /var/log/fail2ban.log
+maxretry = 3
+findtime = 1d
+bantime  = 1w

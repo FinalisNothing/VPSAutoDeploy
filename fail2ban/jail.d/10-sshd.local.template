@@ -1,0 +1,26 @@
+# /etc/fail2ban/jail.d/10-sshd.local
+# Rendered from 10-sshd.local.template by deploy.sh ({{SSH_PORT}}).
+#
+# backend = systemd, explicitly: the minimal Debian 13 this repo targets
+# ships no rsyslog, so /var/log/auth.log does not exist - sshd logs only to
+# the journal. Debian's paths-debian.conf would map sshd_backend=systemd
+# anyway; stating it here keeps the jail honest and rsyslog-independent,
+# and no logpath is set because the journal is the source.
+#
+# No filter= line either: the stock default is
+#   filter = %(__name__)s[mode=%(mode)s]
+# which passes mode through to the filter. Overriding it with a bare
+# "filter = sshd" (as an older revision of this config did) silently
+# discards mode=aggressive and drops the jail back to normal mode.
+
+[sshd]
+enabled  = true
+port     = {{SSH_PORT}}
+# aggressive = normal + ddos + extra:
+#   catches auth failures, invalid users, connection floods,
+#   protocol abuse, algorithm negotiation failures
+mode     = aggressive
+backend  = systemd
+maxretry = 3
+findtime = 10m
+bantime  = 1h
