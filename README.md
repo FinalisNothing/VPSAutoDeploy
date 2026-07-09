@@ -1,6 +1,6 @@
 # VPSAutoDeploy
 
-Automated VPS deployment scripts for Debian 13 with Xray + Nginx + 3x-ui + CLIProxyAPI.
+Automated VPS deployment scripts for Debian 13 with Xray + Nginx + 3x-ui.
 
 ## Deployment Phases
 
@@ -67,60 +67,90 @@ pass through sshd, so the SSH restrictions do not apply there.
 
 ### Phase 1: Kernel Replacement (`phase1-kernel.sh`)
 
-Run on the **freshly reinstalled system**. Updates packages, installs a BBR v3 kernel, and lets you choose a queue discipline (fq/fq_codel/fq_pie/cake).
+Run on the **freshly reinstalled system**. Updates packages, blacklists
+`virtio_balloon` (it takes effect at the reboot this phase ends with),
+installs a BBR v3 kernel, and lets you choose a queue discipline
+(fq/fq_codel/fq_pie/cake).
 
 ```bash
 bash phase1-kernel.sh
-# Installs kernel → prompts for queue algorithm → asks to reboot
+# Updates system → blacklists balloon → installs kernel → queue algorithm → reboot
 ```
 
-### Phase 2: Main Configuration (`phase2-configure.sh`)
+### Phase 2: Service Deployment (`phase2-deploy.sh`)
 
-Run **after kernel reboot**. This is the main script covering 17 steps:
+Run **after the phase1 kernel reboot** (log in as your user, `sudo -i`,
+`cd VPSAutoDeploy`). Identity and login are already owned by the earlier
+phases, so phase2 **never asks for usernames, passwords, or SSH ports** — a
+read-only preflight detects the phase0 user (`SUDO_USER`) and the SSH port
+(`sshd -T`), and verifies the earlier phases' contracts (key-only sshd, BBR
+active) before touching anything.
 
-1. Disable virtio_balloon
-2. Create user + set passwords
-3. SSH port + root login hardening
-4. UFW firewall (IPv4 only: SSH/80/443 TCP+UDP)
-5. Deploy custom-built Nginx from GitHub Release
-6. Install jemalloc (for nginx only)
-7. Create nginx.service with jemalloc LD_PRELOAD
-8. ACME certificate (ZeroSSL via acme.sh)
-9. Cloudflare origin certificate (manual paste)
-10. Certificate directory permissions
-11. Generate cloudflare-ips.geo
-12. Deploy final nginx.conf from template
-13. Deploy Fail2ban
-14. Install 3x-ui (interactive config skipped via sed)
-15. Replace x-ui.db (user uploads via scp, manual confirmation)
-16. Install CLIProxyAPI
-17. SSH key authentication (disable password login)
+The 11 steps, all scoped to the service stack:
 
-> **Note:** jemalloc is only applied to nginx (C program). 3x-ui, Xray, and CLIProxyAPI are Go static binaries — `LD_PRELOAD` has no effect on them.
+1. UFW firewall (detected SSH port + 80/443 TCP+UDP, IPv4 only)
+2. Deploy custom-built Nginx from GitHub Release
+3. Install jemalloc (for nginx only)
+4. Create nginx.service with jemalloc LD_PRELOAD
+5. ACME certificate (ZeroSSL via acme.sh, with an A-record sanity check)
+6. Cloudflare origin certificate (pre-uploaded file or paste; validated with openssl)
+7. Certificate directory permissions
+8. cloudflare-ips.geo (via `update-cloudflare-ips.sh`) + final nginx.conf
+9. Install 3x-ui (interactive config skipped via sed)
+10. Restore x-ui.db (pre-uploaded file or scp wait; upload-completion detected by size stability)
+11. Deploy Fail2ban (jail.d layout, SSH port passed through)
+
+> **Note:** jemalloc is only applied to nginx (C program). 3x-ui and Xray are
+> Go static binaries — `LD_PRELOAD` has no effect on them.
 
 ```bash
-# Interactive mode
-bash phase2-configure.sh
-
-# Or pre-fill config first (recommended for repeatability)
-bash phase2-configure.sh --generate-config
+# Recommended: pre-fill config, then run
+bash phase2-deploy.sh --generate-config
 nano /root/vpsautodeploy.conf
-bash phase2-configure.sh
+bash phase2-deploy.sh
+
+# Or fully interactive
+bash phase2-deploy.sh
 
 # Other commands
-bash phase2-configure.sh --status           # Show all service status
-bash phase2-configure.sh --reset            # Restore backups, stop services
-bash phase2-configure.sh --generate-config  # Generate config template
+bash phase2-deploy.sh --status           # Show all service status
+bash phase2-deploy.sh --reset            # Restore backups, stop services (never touches SSH/UFW)
+bash phase2-deploy.sh --generate-config  # Generate config template
 ```
 
-The config file can also be edited locally and uploaded via SCP:
+The config file holds **service parameters only** (email, domains, paths,
+panel port, disguise backend) — no credentials. It can be edited locally and
+uploaded via SCP; the script auto-detects it in `/root/` or any `/home/*/`:
+
 ```bash
-scp vpsautodeploy.conf root@<VPS_IP>:~/
-# or
-scp vpsautodeploy.conf <user>@<VPS_IP>:~/
+scp -P <port> vpsautodeploy.conf <user>@<VPS_IP>:~/
 ```
 
-The script auto-detects and loads config from `/root/` or any `/home/*/` directory.
+**Zero-touch run:** upload the optional artifacts together with the config
+and phase2 completes without a single prompt:
+
+```bash
+scp -P <port> vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
+# cf-fullchain.pem / cf-privkey.pem : Cloudflare origin cert for CDN_DOMAIN
+# x-ui.db                           : existing 3x-ui database to restore
+```
+
+### Fail2ban layout
+
+Fail2ban config is deployed as `jail.d` drop-ins instead of one `jail.local`:
+
+- `00-default.local` — shared defaults (UFW ban action, progressive bans)
+- `01-ignoreip.local` — **generated** by `update-cloudflare-ips.sh` (localhost +
+  your entries from `/etc/fail2ban/ignoreip.custom` + fetched Cloudflare ranges)
+- `10-sshd.local` — rendered with the detected SSH port; `backend = systemd`
+  (minimal Debian 13 has no rsyslog, sshd logs only to the journal)
+- `20-nginx.local` / `30-recidive.local` — nginx jails and escalation
+
+`update-cloudflare-ips.sh` is the single source of truth for Cloudflare IPs:
+it regenerates both the nginx geo file and the fail2ban ignoreip drop-in,
+updates whichever target exists, and runs monthly via cron. Permanent custom
+safe-list entries go in `/etc/fail2ban/ignoreip.custom` (one per line) and
+survive every refresh.
 
 ## Repository Structure
 
@@ -130,7 +160,7 @@ VPSAutoDeploy/
 ├── phase0-reinstall.sh
 ├── harden-ssh.sh
 ├── phase1-kernel.sh
-├── phase2-configure.sh
+├── phase2-deploy.sh
 ├── templates/
 │   ├── nginx.conf.template
 │   ├── nginx-temp.conf.template
@@ -139,12 +169,15 @@ VPSAutoDeploy/
 │   └── common.sh
 └── fail2ban/
     ├── deploy.sh
-    ├── jail.local
     ├── update-cloudflare-ips.sh
     ├── unban_timerange.sh
-    ├── nginx-additions.conf
+    ├── jail.d/
+    │   ├── 00-default.local
+    │   ├── 10-sshd.local.template
+    │   ├── 20-nginx.local
+    │   └── 30-recidive.local
     └── filter.d/
-        ├── ...
+        └── ...
 ```
 
 ## External Script Dependencies
@@ -154,11 +187,10 @@ VPSAutoDeploy/
 | External Script | Source | Our Handling | Change Risk |
 |---|---|---|---|
 | `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--username/--password/--ssh-port` to bypass interaction (never `--ssh-key`) | Parameter format may change |
-| BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | `echo "1\nn"` to install kernel without auto-reboot; queue algorithm configured via sysctl file | Menu order may change |
+| BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | Menu action numbers derived from the downloaded script; qdisc applied through the installer | Menu order may change |
 | 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` call | Function name may be renamed |
 | 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` call | Same as above |
-| CLIProxyAPI installer | [brokechubb/cliproxyapi-installer](https://github.com/brokechubb/cliproxyapi-installer) | Direct execution (zero interaction) | Service file format may change |
-| Fail2ban `deploy.sh` | This repository | Pass `SSH_PORT` env var | No external risk |
+| Fail2ban `deploy.sh` | This repository | Pass `SSH_PORT` env var (auto-detected from `sshd -T` if unset) | No external risk |
 
 ## Post-Deployment Updates
 
@@ -174,16 +206,6 @@ bash /tmp/x-ui-update.sh
 
 The `sed` only comments out the `config_after_update` function **call** (not the function definition), which skips the interactive SSL/credential prompts while preserving database migration.
 
-### CLIProxyAPI Update
-
-Re-run the installer as the service user:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash
-```
-
-The installer preserves existing `config.yaml` via automatic backup/restore.
-
 ## Verification Checklist
 
 - [ ] phase0: reinstall successful, `ssh <username>@<VPS_IP> -p <port>` works, `sudo -i` reaches root
@@ -191,18 +213,15 @@ The installer preserves existing `config.yaml` via automatic backup/restore.
 - [ ] phase1: `uname -r` shows BBR v3 kernel
 - [ ] phase1: `sysctl net.ipv4.tcp_congestion_control` shows `bbr`
 - [ ] phase1: `sysctl net.core.default_qdisc` shows chosen algorithm (fq/fq_codel/fq_pie/cake)
-- [ ] virtio_balloon: `lsmod | grep balloon` returns empty
-- [ ] User: new user can `sudo`
-- [ ] SSH: custom port works
+- [ ] phase1: `lsmod | grep balloon` returns empty (after the reboot)
+- [ ] phase2 preflight: detected user and SSH port match what phase0 set
 - [ ] UFW: `ufw status` shows IPv4 rules only, 80/443(tcp+udp)/SSH allowed
 - [ ] Nginx: `curl http://DIRECT_DOMAIN/.well-known/acme-challenge/test` returns 200/404 (not connection refused)
 - [ ] Certificate: `openssl s_client -connect DIRECT_DOMAIN:443` shows valid cert
 - [ ] CF cert: CDN domain accessible via Cloudflare
 - [ ] Fail2ban: `fail2ban-client status` shows all jails active
 - [ ] 3x-ui: `https://DIRECT_DOMAIN/XUI_PANEL_PATH/` accessible in browser
-- [ ] CLIProxyAPI: endpoint accessible
 - [ ] jemalloc: `grep libjemalloc /proc/$(pgrep -x nginx -o)/maps` shows loaded
-- [ ] SSH key: key login works, password login rejected
 
 ## State Files
 
@@ -210,6 +229,6 @@ After deployment, these files exist on the VPS:
 
 | File | Purpose | Safe to delete? |
 |---|---|---|
-| `/root/vpsautodeploy.conf` | Saved configuration (passwords in cleartext) | Yes, after deployment is verified |
+| `/root/vpsautodeploy.conf` | Saved configuration (service parameters, no credentials) | Yes, after deployment is verified |
 | `/root/vpsautodeploy.state` | Completed step tracking | Yes, after deployment is verified |
 | `/root/vpsautodeploy.backup/` | Pre-modification config backups | Keep until confident |

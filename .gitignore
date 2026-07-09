@@ -1,0 +1,5 @@
+# Local deployment artifacts - never commit these.
+# x-ui.db contains panel credentials and inbound configs.
+x-ui.db
+vpsautodeploy.conf
+*.pem
