@@ -3,3 +3,15 @@
 x-ui.db
 vpsautodeploy.conf
 *.pem
+
+# 项目级 / 本地 配置与凭据（勿提交）
+.claude/settings.local.json
+.claude/settings.json
+.claude/worktrees/
+.mcp.json
+
+# 本地数据库与日志
+*.db
+*.db-shm
+*.db-wal
+*.log
