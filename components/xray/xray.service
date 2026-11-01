@@ -1,0 +1,24 @@
+[Unit]
+Description=Xray (VPSAutoDeploy)
+Documentation=https://github.com/XTLS/Xray-core
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xray
+Group=xray
+# 443 needs NET_BIND_SERVICE; NET_ADMIN lets a WireGuard outbound use a kernel TUN.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+ExecStart=/usr/local/bin/xray run -c /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartSec=5s
+# 23 = configuration error: restarting cannot help
+RestartPreventExitStatus=23
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

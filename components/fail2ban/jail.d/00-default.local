@@ -8,7 +8,7 @@
 #                        never edit it by hand. Permanent custom safe-list
 #                        entries go into /etc/fail2ban/ignoreip.custom
 #                        (one per line) and survive every regeneration.
-#   10-sshd.local        rendered from 10-sshd.local.template by deploy.sh
+#   10-sshd.local        rendered from 10-sshd.local.template with the SSH port
 #   20-nginx.local       nginx jails
 #   30-recidive.local    repeat-offender escalation
 

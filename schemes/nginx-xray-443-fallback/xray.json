@@ -1,0 +1,308 @@
+{
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "debug"
+  },
+  "api": {
+    "tag": "api",
+    "services": [
+      "HandlerService",
+      "LoggerService",
+      "StatsService"
+    ]
+  },
+  "stats": {},
+  "metrics": {
+    "tag": "metrics_out",
+    "listen": "127.0.0.1:11111"
+  },
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
+    }
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 62789,
+      "protocol": "tunnel",
+      "settings": {
+        "rewriteAddress": "127.0.0.1"
+      }
+    },
+    {
+      "tag": "reality_in",
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "{{VISION_UUID}}",
+            "email": "{{VISION_EMAIL}}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none",
+        "fallbacks": [
+          {
+            "dest": "{{XHTTP_REALITY_SOCK}}"
+          }
+        ],
+        "testseed": [
+          0,
+          256,
+          900,
+          1400
+        ]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "target": "{{NGINX_TLS_SOCK}}",
+          "xver": 1,
+          "serverNames": [
+            "{{DIRECT_DOMAIN}}"
+          ],
+          "privateKey": "{{REALITY_PRIVATE_KEY}}",
+          "shortIds": "{{REALITY_SHORT_IDS:json}}",
+          "mldsa65Seed": "{{REALITY_MLDSA65_SEED}}"
+        },
+        "rawSettings": {
+          "header": {
+            "type": "none"
+          }
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "xhttp_tls_in",
+      "listen": "{{XHTTP_TLS_SOCK}},0666",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "{{XHTTP_TLS_UUID}}",
+            "email": "{{XHTTP_TLS_EMAIL}}"
+          }
+        ],
+        "decryption": "{{XHTTP_TLS_DECRYPTION}}"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "path": "/{{XHTTP_PATH}}",
+          "scMaxBufferedPosts": 30,
+          "scMaxEachPostBytes": "1000000",
+          "scStreamUpServerSecs": "20-80",
+          "xPaddingBytes": "100-1000"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "xhttp_reality_in",
+      "listen": "{{XHTTP_REALITY_SOCK}},0666",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "{{XHTTP_REALITY_UUID}}",
+            "email": "{{XHTTP_REALITY_EMAIL}}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "path": "/{{XHTTP_REALITY_PATH}}",
+          "scMaxBufferedPosts": 30,
+          "scMaxEachPostBytes": "1000000",
+          "scStreamUpServerSecs": "20-80",
+          "xPaddingBytes": "100-1000"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "cpa-warp-proxy",
+      "listen": "127.0.0.1",
+      "port": "{{WARP_PROXY_PORT:json}}",
+      "protocol": "mixed",
+      "settings": {
+        "ip": "127.0.0.1"
+      },
+      "sniffing": {
+        "enabled": false,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic",
+          "fakedns"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {}
+    },
+    {
+      "tag": "warp",
+      "protocol": "wireguard",
+      "settings": {
+        "secretKey": "{{WARP_SECRET_KEY}}",
+        "address": [
+          "{{WARP_ADDRESS_V4}}",
+          "{{WARP_ADDRESS_V6}}"
+        ],
+        "reserved": "{{WARP_RESERVED:json}}",
+        "peers": [
+          {
+            "publicKey": "{{WARP_PEER_PUBLIC_KEY}}",
+            "allowedIPs": [
+              "0.0.0.0/0",
+              "::/0"
+            ],
+            "endpoint": "{{WARP_ENDPOINT}}"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "IPV4OUT",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv4"
+        }
+      }
+    },
+    {
+      "tag": "IPV6OUT",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv6"
+        }
+      }
+    },
+    {
+      "tag": "easy_proxy",
+      "protocol": "http",
+      "settings": {
+        "address": "127.0.0.1",
+        "port": 12355
+      }
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "inboundTag": [
+          "api"
+        ],
+        "outboundTag": "api"
+      },
+      {
+        "inboundTag": [
+          "cpa-warp-proxy"
+        ],
+        "outboundTag": "warp"
+      },
+      {
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "featureassets.org",
+          "geosite:google",
+          "geosite:youtube"
+        ],
+        "outboundTag": "IPV6OUT"
+      },
+      {
+        "domain": [
+          "geosite:category-ads-all"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "domain:clau.de",
+          "domain:claude.ai",
+          "domain:anthropic.com",
+          "geosite:openai",
+          "geosite:netflix",
+          "geosite:reddit"
+        ],
+        "outboundTag": "warp"
+      },
+      {
+        "domain": [
+          "geosite:cn",
+          "regexp:.*\\.cn$"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "ip": [
+          "geoip:private",
+          "geoip:cn"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "geosite:openai"
+        ],
+        "outboundTag": "easy_proxy"
+      }
+    ]
+  }
+}

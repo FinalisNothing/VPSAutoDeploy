@@ -1,6 +1,10 @@
 # VPSAutoDeploy
 
-Automated VPS deployment scripts for Debian 13 with Xray + Nginx + 3x-ui.
+Automated VPS deployment for Debian 13: a hardened base system, then a
+**proxy scheme** of your choice running on bare Xray-core — no panel, no
+database. A scheme is one complete way of running the proxy (inputs, guide,
+deployment, checks, client links); switching to another scheme later is one
+command and leaves the rest of the machine alone.
 
 ## Deployment Phases
 
@@ -77,7 +81,7 @@ bash phase1-kernel.sh
 # Updates system → blacklists balloon → installs kernel → queue algorithm → reboot
 ```
 
-### Phase 2: Service Deployment (`phase2-deploy.sh`)
+### Phase 2: Proxy scheme (`phase2-deploy.sh`)
 
 Run **after the phase1 kernel reboot** (log in as your user, `sudo -i`,
 `cd VPSAutoDeploy`). Identity and login are already owned by the earlier
@@ -86,54 +90,82 @@ read-only preflight detects the phase0 user (`SUDO_USER`) and the SSH port
 (`sshd -T`), and verifies the earlier phases' contracts (key-only sshd, BBR
 active) before touching anything.
 
-The 11 steps, all scoped to the service stack:
-
-1. UFW firewall (detected SSH port + 80/443 TCP+UDP, IPv4 only)
-2. Deploy custom-built Nginx from GitHub Release
-3. Install jemalloc (for nginx only)
-4. Create nginx.service with jemalloc LD_PRELOAD
-5. ACME certificate (ZeroSSL via acme.sh, with an A-record sanity check)
-6. Cloudflare origin certificate (pre-uploaded file or paste; validated with openssl)
-7. Certificate directory permissions
-8. cloudflare-ips.geo (via `update-cloudflare-ips.sh`) + final nginx.conf
-9. Install 3x-ui (interactive config skipped via sed)
-10. Restore x-ui.db (pre-uploaded file or scp wait; upload-completion detected by size stability)
-11. Deploy Fail2ban (jail.d layout, SSH port passed through)
-
-> **Note:** jemalloc is only applied to nginx (C program). 3x-ui and Xray are
-> Go static binaries — `LD_PRELOAD` has no effect on them.
+What phase2 deploys is a **scheme** (`schemes/<id>/`): one complete way of
+running the proxy — which ports it takes, the xray and nginx configuration, the
+inputs it needs, the guide that walks you through them, the health checks and
+the client links. You **choose the scheme first**; its guide then tells you what
+to prepare and asks only for what that scheme needs, checking each preparation
+(DNS, Cloudflare, …) as you go. `schemes/README.md` describes what a scheme is
+and how to add one.
 
 ```bash
-# Recommended: pre-fill config, then run
-bash phase2-deploy.sh --generate-config
-nano /root/vpsautodeploy.conf
-bash phase2-deploy.sh
-
-# Or fully interactive
-bash phase2-deploy.sh
-
-# Other commands
-bash phase2-deploy.sh --status           # Show all service status
-bash phase2-deploy.sh --reset            # Restore backups, stop services (never touches SSH/UFW)
-bash phase2-deploy.sh --generate-config  # Generate config template
+bash phase2-deploy.sh --list     # every scheme: entries, egress, what it needs
+bash phase2-deploy.sh            # choose, follow the guide, deploy, verify, print client links
 ```
 
-The config file holds **service parameters only** (email, domains, paths,
-panel port, disguise backend) — no credentials. It can be edited locally and
-uploaded via SCP; the script auto-detects it in `/root/` or any `/home/*/`:
+A run, in order:
+
+1. **Preflight** — detected user and SSH port, earlier phases' contracts.
+2. **Scheme** — `--scheme ID`, or `SCHEME=` from the conf file, or the active one on a re-run, or a menu.
+3. **Guide** — the scheme's preparation notes, inputs and checks.
+4. **Base**, independent of any scheme — UFW (incoming denied, SSH allowed), fail2ban (sshd + recidive).
+5. **The scheme's steps** — each checks the machine before acting, so a failed run is continued by the next one.
+6. **Verify** — observed health: listening sockets, real requests through every entry, real egress.
+7. **Client share links** (also kept in `/etc/vpsautodeploy/schemes/<id>/links.txt`).
+
+**Zero-touch:** write the conf file (anywhere — it is a plain template),
+upload it with the files the scheme asks for, then run with `--yes`:
 
 ```bash
-scp -P <port> vpsautodeploy.conf <user>@<VPS_IP>:~/
+bash phase2-deploy.sh --generate-config <scheme> vpsautodeploy.conf
+# fill it in, then:
+scp -P <port> vpsautodeploy.conf <files the scheme asks for> <user>@<VPS_IP>:~/
+bash phase2-deploy.sh --yes      # --yes also accepts the guide's warnings
 ```
 
-**Zero-touch run:** upload the optional artifacts together with the config
-and phase2 completes without a single prompt:
+- The conf file is `KEY=VALUE`, read literally — never executed.
+- Uploads are only taken from `/root` and the deploy user's home, must be owned
+  by root or that user, and count as complete when their content validates (a
+  half-uploaded certificate does not parse). They are moved into
+  `/etc/vpsautodeploy/`, so no key stays in a home directory and re-runs use the
+  stored copy.
+- **Keys** (client UUIDs, REALITY keys, …) are generated on the VPS by xray
+  itself. To keep existing clients working on a new VPS, put the old values into
+  the conf file's secrets section; they are imported as they are.
+
+Other commands:
 
 ```bash
-scp -P <port> vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
-# cf-fullchain.pem / cf-privkey.pem : Cloudflare origin cert for CDN_DOMAIN
-# x-ui.db                           : existing 3x-ui database to restore
+bash phase2-deploy.sh --status       # observed health of everything; exit 1 if a check fails
+bash phase2-deploy.sh --links        # client links of the active scheme
+bash phase2-deploy.sh --update       # xray-core (the scheme's pinned version; --xray-version latest for the newest)
+                                     # and geodata - tested against the active config before they replace anything
+bash phase2-deploy.sh --deactivate   # remove what the active scheme owns
 ```
+
+**Switching schemes** is a normal run with another scheme chosen. The old
+scheme is deactivated first: its firewall rules (comment
+`vpsautodeploy:<id>`) are deleted, xray stops, nginx keeps serving only
+`/nginx/conf/sites.d/`. Nothing else is touched — SSH, the firewall baseline,
+fail2ban, certificates, other services, and the old scheme's stored inputs, so
+switching back brings back the same keys and the same client links. If the old
+scheme provides something to local services (a local proxy port, …), you are
+warned before anything changes.
+
+### What runs on the VPS
+
+| Component | Where | Notes |
+|---|---|---|
+| Xray-core | `/usr/local/bin/xray` → `/usr/local/lib/vpsautodeploy/xray/<version>/` | Official release, SHA2-256 from the release `.dgst`. Runs as user `xray` with only `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN`; config in `/usr/local/etc/xray/config.json`, logs in `/var/log/xray/` (logrotate daily, 7 kept). |
+| Geodata | `/usr/local/share/xray/` | Loyalsoldier `geoip.dat` / `geosite.dat`, sha256-verified. |
+| nginx | `/nginx` | Custom stealth build ([nginx-build](https://github.com/FinalisNothing/nginx-build)), SHA256SUMS-verified, jemalloc preloaded. Other local services add server blocks in `/nginx/conf/sites.d/`. |
+| Certificates | `/etc/vpsautodeploy/certs/<domain>/` | ZeroSSL via acme.sh (renewed by its cron), or files you supply. |
+| UFW, fail2ban | | Baseline belongs to the machine; scheme ports are tagged with the scheme. |
+
+Every config is **tested before it replaces the running one** (`nginx -t`,
+`xray run -test` as the unprivileged `xray` user), the previous one is backed
+up to `/etc/vpsautodeploy/backup/`, and a service that does not come up with
+the new config is rolled back.
 
 ### Fail2ban layout
 
@@ -144,7 +176,8 @@ Fail2ban config is deployed as `jail.d` drop-ins instead of one `jail.local`:
   your entries from `/etc/fail2ban/ignoreip.custom` + fetched Cloudflare ranges)
 - `10-sshd.local` — rendered with the detected SSH port; `backend = systemd`
   (minimal Debian 13 has no rsyslog, sshd logs only to the journal)
-- `20-nginx.local` / `30-recidive.local` — nginx jails and escalation
+- `30-recidive.local` — escalation for repeat offenders
+- `20-nginx.local` — nginx jails, deployed by schemes that use nginx
 
 `update-cloudflare-ips.sh` is the single source of truth for Cloudflare IPs:
 it regenerates both the nginx geo file and the fail2ban ignoreip drop-in,
@@ -156,55 +189,43 @@ survive every refresh.
 
 ```
 VPSAutoDeploy/
-├── README.md
-├── phase0-reinstall.sh
-├── harden-ssh.sh
-├── phase1-kernel.sh
-├── phase2-deploy.sh
-├── templates/
-│   ├── nginx.conf.template
-│   ├── nginx-temp.conf.template
-│   └── nginx.service
+├── phase0-reinstall.sh, harden-ssh.sh, phase1-kernel.sh   base system
+├── phase2-deploy.sh                 the scheme engine's entry point
 ├── lib/
-│   └── common.sh
-└── fail2ban/
-    ├── deploy.sh
-    ├── update-cloudflare-ips.sh
-    ├── unban_timerange.sh
-    ├── jail.d/
-    │   ├── 00-default.local
-    │   ├── 10-sshd.local.template
-    │   ├── 20-nginx.local
-    │   └── 30-recidive.local
-    └── filter.d/
-        └── ...
+│   ├── common.sh                    messages, value kinds, KEY=VALUE files, templates, downloads
+│   ├── engine.sh                    scheme loading, inputs, uploads, steps, switching
+│   └── guide.sh                     checks a scheme's guide uses (DNS, Cloudflare, HTTPS, IPv6)
+├── components/                      building blocks schemes use
+│   ├── firewall/  fail2ban/  nginx/  certs/  xray/  warp/
+├── schemes/
+│   ├── README.md                    what a scheme is, the contract, how to add one
+│   └── <id>/                        scheme.sh + templates (and a README)
+└── tests/e2e/                       Debian 13 container test (deploy, clients, switching)
 ```
 
-## External Script Dependencies
+## External Dependencies
 
-> These are third-party scripts fetched at runtime. Their interfaces may change without notice.
+> Fetched at deploy time. Everything with a published checksum is verified;
+> release assets and their checksum files come from the same pinned release tag.
 
-| External Script | Source | Our Handling | Change Risk |
+| Dependency | Source | Our Handling | Change Risk |
 |---|---|---|---|
 | `reinstall.sh` | [bin456789/reinstall](https://github.com/bin456789/reinstall) | `--username/--password/--ssh-port` to bypass interaction (never `--ssh-key`) | Parameter format may change |
 | BBR v3 `install.sh` | [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3) | Menu action numbers derived from the downloaded script; qdisc applied through the installer | Menu order may change |
-| 3x-ui `install.sh` | [mhsanaei/3x-ui](https://github.com/mhsanaei/3x-ui) | Download then `sed` to comment out `config_after_install` call | Function name may be renamed |
-| 3x-ui `update.sh` | [MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui) | Download then `sed` to comment out `config_after_update` call | Same as above |
-| Fail2ban `deploy.sh` | This repository | Pass `SSH_PORT` env var (auto-detected from `sshd -T` if unset) | No external risk |
+| Xray-core release | [XTLS/Xray-core](https://github.com/XTLS/Xray-core/releases) | Version pinned by the scheme; SHA2-256 from `.dgst`; new versions must pass `run -test` on the active config | Config keys get deprecated / removed |
+| Geodata | [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) | `.sha256sum` verified; active config tested against new files first | Category names may change |
+| nginx build | [FinalisNothing/nginx-build](https://github.com/FinalisNothing/nginx-build) | `SHA256SUMS.txt` verified; needs x86-64-v2 | — |
+| acme.sh | [get.acme.sh](https://github.com/acmesh-official/acme.sh) | Downloaded, then run; ZeroSSL, HTTP-01 on nginx | Installer behaviour may change |
+| Cloudflare WARP API | `api.cloudflareclient.com/v0a2158/reg` | Device registration (same call 3x-ui makes); values can be supplied instead | Undocumented API |
+| Cloudflare IP lists | `cloudflare.com/ips-v4`, `ips-v6` | Sanity-checked (count, CIDR syntax) before use | — |
 
-## Post-Deployment Updates
+## Testing
 
-### 3x-ui Update
-
-Do **not** use `x-ui update`. Instead:
-
-```bash
-curl -Ls -o /tmp/x-ui-update.sh https://raw.githubusercontent.com/MHSanaei/3x-ui/main/update.sh
-sed -i 's/^[[:space:]]*config_after_update$/#config_after_update/' /tmp/x-ui-update.sh
-bash /tmp/x-ui-update.sh
-```
-
-The `sed` only comments out the `config_after_update` function **call** (not the function definition), which skips the interactive SSL/credential prompts while preserving database migration.
+`tests/e2e/run.sh` (needs docker and internet; no real VPS) deploys in a
+Debian 13 systemd container with a local test CA standing in for DNS and ACME,
+connects through **every client link** with a real xray client, re-runs to check
+that nothing changes, switches to a test scheme and back (same links), and
+deactivates.
 
 ## Verification Checklist
 
@@ -215,20 +236,18 @@ The `sed` only comments out the `config_after_update` function **call** (not the
 - [ ] phase1: `sysctl net.core.default_qdisc` shows chosen algorithm (fq/fq_codel/fq_pie/cake)
 - [ ] phase1: `lsmod | grep balloon` returns empty (after the reboot)
 - [ ] phase2 preflight: detected user and SSH port match what phase0 set
-- [ ] UFW: `ufw status` shows IPv4 rules only, 80/443(tcp+udp)/SSH allowed
-- [ ] Nginx: `curl http://DIRECT_DOMAIN/.well-known/acme-challenge/test` returns 200/404 (not connection refused)
-- [ ] Certificate: `openssl s_client -connect DIRECT_DOMAIN:443` shows valid cert
-- [ ] CF cert: CDN domain accessible via Cloudflare
-- [ ] Fail2ban: `fail2ban-client status` shows all jails active
-- [ ] 3x-ui: `https://DIRECT_DOMAIN/XUI_PANEL_PATH/` accessible in browser
+- [ ] phase2: `bash phase2-deploy.sh --status` exits 0 (it checks listeners, real requests through every entry, egress, certificates, UFW, fail2ban)
+- [ ] phase2: each client link connects from a real client
+- [ ] UFW: `ufw status` shows IPv4 rules only: SSH plus the scheme's ports (comment `vpsautodeploy:<id>`)
 - [ ] jemalloc: `grep libjemalloc /proc/$(pgrep -x nginx -o)/maps` shows loaded
 
-## State Files
+## State on the VPS
 
-After deployment, these files exist on the VPS:
-
-| File | Purpose | Safe to delete? |
+| Path | Purpose | Safe to delete? |
 |---|---|---|
-| `/root/vpsautodeploy.conf` | Saved configuration (service parameters, no credentials) | Yes, after deployment is verified |
-| `/root/vpsautodeploy.state` | Completed step tracking | Yes, after deployment is verified |
-| `/root/vpsautodeploy.backup/` | Pre-modification config backups | Keep until confident |
+| `/etc/vpsautodeploy/engine.state` | Active scheme and whether its deployment finished | No |
+| `/etc/vpsautodeploy/schemes/<id>/params` | The scheme's inputs **and keys** (mode 600) — back it up privately to move clients to a new VPS | No |
+| `/etc/vpsautodeploy/schemes/<id>/files/` | Uploaded files (e.g. origin certificate) | No |
+| `/etc/vpsautodeploy/schemes/<id>/links.txt` | Client links | Yes (`--links` recreates it) |
+| `/etc/vpsautodeploy/certs/` | TLS certificates | No |
+| `/etc/vpsautodeploy/backup/` | Configs replaced by later runs | Yes, once you are confident |

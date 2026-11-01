@@ -1,64 +1,43 @@
 #!/bin/bash
-# phase2-deploy.sh - Deploy the service stack on the hardened VPS.
-# Run after the phase1 kernel reboot.
+# phase2-deploy.sh - Deploy (or switch to) a proxy scheme on the hardened VPS.
+# Run after the phase1 kernel reboot: log in as your user, `sudo -i`, cd here.
 #
 # Earlier phases own identity and login, so this script never asks for them:
 #   phase0        created the sudo user, baked the SSH port in at DD time
 #   harden-ssh    installed your key, closed password login, set passwords
 #   phase1        BBR v3 kernel + qdisc (+ virtio_balloon blacklist)
-# The preflight DETECTS the user and SSH port from the system and verifies
-# those contracts. The config file carries service parameters only
-# (domains, email, paths, ports) - no credentials.
+# The preflight DETECTS the user and SSH port and verifies those contracts.
 #
-# Zero-touch run: pre-upload the optional artifacts together with the config
-# and the run needs no interaction at all:
-#   scp vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
+# What gets deployed is a *scheme*: schemes/<id>/ describes one complete way
+# of running the proxy - its inputs, a guide that walks you through them,
+# the deployment steps, health checks and client links. You choose a scheme
+# (or SCHEME= in the conf file); switching to another one later removes what
+# the old scheme owned and leaves everything else on the machine alone.
 #
-# Supports:
-#   bash phase2-deploy.sh                    # Normal run (with resume)
-#   bash phase2-deploy.sh --status           # Show service status
-#   bash phase2-deploy.sh --reset            # Restore backups, stop services
-#   bash phase2-deploy.sh --generate-config  # Generate config template file
+# Usage:
+#   bash phase2-deploy.sh [--scheme ID] [--yes] [--xray-version V]  deploy / switch
+#   bash phase2-deploy.sh --list                     schemes and what they need
+#   bash phase2-deploy.sh --status                   observed health (exit 1 on failure)
+#   bash phase2-deploy.sh --links                    client share links of the active scheme
+#   bash phase2-deploy.sh --update [--xray-version V]  xray-core + geodata, tested first
+#   bash phase2-deploy.sh --deactivate [--yes]       remove what the active scheme owns
+#   bash phase2-deploy.sh --generate-config [ID] [FILE]  conf template for a scheme
+#
+# Zero-touch: upload vpsautodeploy.conf (SCHEME= plus the scheme's inputs) and
+# any files the scheme asks for to your home directory, then run with --yes.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VPSAD_ROOT="$SCRIPT_DIR"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/guide.sh"
+source "$SCRIPT_DIR/lib/engine.sh"
 
-require_root
-
-BACKUP_DIR="/root/vpsautodeploy.backup"
-TOTAL_STEPS=11
-
-###############################################################################
-# Backup / restore helpers
-###############################################################################
-
-# Backup a file before modifying it (only first time)
-backup_file() {
-    local filepath="$1"
-    local backname
-    backname="$(echo "$filepath" | tr '/' '_')"
-    mkdir -p "$BACKUP_DIR"
-    if [ -f "$filepath" ] && [ ! -f "$BACKUP_DIR/$backname" ]; then
-        cp -p "$filepath" "$BACKUP_DIR/$backname"
-    fi
-}
-
-# Restore a file from backup
-restore_file() {
-    local filepath="$1"
-    local backname
-    backname="$(echo "$filepath" | tr '/' '_')"
-    if [ -f "$BACKUP_DIR/$backname" ]; then
-        cp -p "$BACKUP_DIR/$backname" "$filepath"
-        msg_ok "Restored $filepath"
-    else
-        msg_warn "No backup for $filepath"
-    fi
+usage() {
+    sed -n '/^# Usage:/,/^# Zero-touch/p' "$0" | sed '$d; s/^# \{0,1\}//'
 }
 
 ###############################################################################
-# System detection - the phase2 entry point.
-# Identity facts are read from the system, never asked for:
+# System detection - identity facts are read from the system, never asked for:
 #   USERNAME  the phase0 user (sudo -i keeps SUDO_USER; fallback: UID 1000)
 #   SSH_PORT  the running sshd's effective port
 ###############################################################################
@@ -70,18 +49,15 @@ detect_system() {
     [ -n "$USERNAME" ] || die "Cannot detect the phase0 user (no SUDO_USER, no UID-1000 account). Log in as your user, then: sudo -i"
     validate_username "$USERNAME"
     USER_HOME="$(getent passwd "$USERNAME" | cut -d: -f6)"
-    [ "$USER_HOME" = "/home/$USERNAME" ] || die "Unexpected home '$USER_HOME' for $USERNAME - the nginx template assumes /home/$USERNAME."
-    [ -d "$USER_HOME" ] || die "Home directory $USER_HOME not found."
+    [ -d "$USER_HOME" ] || die "Home directory $USER_HOME of $USERNAME not found."
     id -nG "$USERNAME" | tr ' ' '\n' | grep -qx sudo \
         || die "$USERNAME is not in the sudo group - were phase0 and harden-ssh completed?"
-
     SSH_PORT="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')" || SSH_PORT=""
     [ -n "$SSH_PORT" ] || die "Cannot read the effective SSH port (sshd -T failed). Is sshd running?"
     validate_port "SSH_PORT (detected)" "$SSH_PORT"
 }
 
-# Verify the contracts the earlier phases established. Warn-and-confirm, not
-# die: a recovery re-run on a half-configured box is legitimate.
+# Verify the contracts the earlier phases established.
 verify_hardening() {
     local pa cc
     pa="$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')" || pa=""
@@ -90,708 +66,286 @@ verify_hardening() {
     else
         msg_warn "sshd still accepts passwords (PasswordAuthentication=${pa:-unknown})."
         msg_warn "harden-ssh.sh was not run or was undone. Deploying on an unhardened box is unsafe."
-        read -r -p "Continue anyway? [y/N]: " CONT
-        [[ "$CONT" =~ ^[Yy]$ ]] || die "Aborted. Run: bash harden-ssh.sh"
+        confirm "Continue anyway?" || die "Aborted. Run: bash harden-ssh.sh"
     fi
-
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" || cc=""
     if [ "$cc" = "bbr" ]; then
         msg_ok "kernel: BBR active (phase1 contract holds)"
     else
         msg_warn "TCP congestion control is '${cc:-unknown}', not bbr - phase1 missing or its reboot skipped."
-        read -r -p "Continue anyway? [y/N]: " CONT
-        [[ "$CONT" =~ ^[Yy]$ ]] || die "Aborted. Run: bash phase1-kernel.sh"
+        confirm "Continue anyway?" || die "Aborted. Run: bash phase1-kernel.sh"
     fi
 }
 
-# Search /root and every /home/* for a pre-uploaded file; prints first match.
-find_artifact() {
-    local name="$1" candidate
-    for candidate in "/root/$name" "$USER_HOME/$name" /home/*/"$name"; do
-        if [ -f "$candidate" ]; then
-            printf '%s' "$candidate"
-            return 0
-        fi
-    done
-    return 1
+take_lock() {
+    exec 9>/run/vpsautodeploy.lock
+    flock -n 9 || die "Another phase2-deploy.sh is running."
 }
 
-# Block until a file's size stops changing (upload finished).
-wait_until_stable() {
-    local path="$1" s1 s2
-    while :; do
-        s1="$(stat -c%s "$path" 2>/dev/null)" || s1="x1"
-        sleep 2
-        s2="$(stat -c%s "$path" 2>/dev/null)" || s2="x2"
-        [ "$s1" = "$s2" ] && break
-    done
-    msg_ok "$path stable at $s1 bytes"
-}
-
-###############################################################################
-# --generate-config: output a template config file for pre-filling
-###############################################################################
-if [ "${1:-}" = "--generate-config" ]; then
-    TARGET="${2:-$CONFIG_FILE}"
-    if [ -f "$TARGET" ]; then
-        msg_warn "Config file already exists at $TARGET"
-        read -r -p "Overwrite? [y/N]: " CONFIRM
-        [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted."
+on_exit() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "${CURRENT_STEP:-}" ]; then
+        msg_error "Stopped during step '$CURRENT_STEP'. Fix the cause and run phase2-deploy.sh again:"
+        msg_error "steps check the machine before acting, so a re-run continues where this one failed."
     fi
-    cat > "$TARGET" << 'TEMPLATE'
-# VPSAutoDeploy configuration file
-# Fill in the values below, then run: bash phase2-deploy.sh
-# Lines starting with # are comments.
-#
-# Identity (username, passwords, SSH port) is NOT configured here - phase0
-# and harden-ssh already own it, and phase2 detects it from the system.
-#
-# Upload to VPS:  scp vpsautodeploy.conf <user>@<VPS_IP>:~/
-#
-# Optional zero-touch artifacts (searched in /root and every /home/*):
-#   cf-fullchain.pem / cf-privkey.pem   Cloudflare origin cert for CDN_DOMAIN
-#   x-ui.db                             existing 3x-ui database to restore
-# Upload them together with this file and phase2 runs without any prompts:
-#   scp vpsautodeploy.conf cf-fullchain.pem cf-privkey.pem x-ui.db <user>@<VPS_IP>:~/
+}
+trap on_exit EXIT
 
-# ── Required fields (must fill in) ──────────────────────────────────
-
-# ACME registration email (for ZeroSSL certificate issuance)
-# Example: ACME_EMAIL=admin@example.com
-ACME_EMAIL=
-
-# Direct-connect domain (DNS A record pointing to VPS IP)
-# Example: DIRECT_DOMAIN=b.example.com
-DIRECT_DOMAIN=
-
-# CDN origin domain (Cloudflare proxied, orange-cloud enabled)
-# Example: CDN_DOMAIN=a.example.com
-CDN_DOMAIN=
-
-# ── Optional fields (leave empty for auto-generated random values) ──
-
-# XHTTP location path (letters, digits, underscore, hyphen only)
-# Leave empty to auto-generate a random 32-character string
-XHTTP_PATH=
-
-# 3x-ui panel location path (same format as above)
-XUI_PANEL_PATH=
-
-# ── Fields with defaults (change if needed) ─────────────────────────
-
-# 3x-ui panel listen port (range: 1024-65535)
-XUI_PANEL_PORT=54321
-
-# Upstream disguise website domain (used as reverse proxy backend)
-# Should be a real, publicly accessible HTTPS website
-BACKEND_WEB=quarkus.io
-TEMPLATE
-    chmod 600 "$TARGET"
-    msg_ok "Config template generated at $TARGET"
-    msg_info "Edit the file, fill in the required values, then run:"
-    echo ""
-    echo "  bash phase2-deploy.sh"
-    echo ""
-    msg_info "Or: edit locally and upload via SCP to any user's home directory:"
-    echo ""
-    echo "  scp vpsautodeploy.conf <user>@<VPS_IP>:~/"
-    echo ""
-    msg_info "The script will auto-detect and move it to $CONFIG_FILE"
-    exit 0
-fi
-
-###############################################################################
-# --status: show all service states
-###############################################################################
-if [ "${1:-}" = "--status" ]; then
+banner() {
     echo ""
     echo "=========================================="
-    echo "  VPS Service Status"
+    echo "  Phase 2: $1"
     echo "=========================================="
-    echo ""
+}
 
+print_links() {
+    local links="$SCHEME_STATE/links.txt"
+    declare -F scheme_links >/dev/null || return 0
+    install -d -m 700 "$SCHEME_STATE"
+    ( umask 077; scheme_links > "$links" )
+    echo ""
+    msg_info "Client share links (also in $links):"
+    echo ""
+    cat "$links"
+}
+
+###############################################################################
+# Commands
+###############################################################################
+
+cmd_deploy() {
+    require_root
+    take_lock
+    banner "Proxy scheme deployment"
+
+    msg_step "Preflight"
     detect_system
-    echo "  Detected: user=$USERNAME  ssh_port=$SSH_PORT"
-
-    if load_config; then
-        echo "  Config: $CONFIG_FILE"
-        echo "  State:  $STATE_FILE"
-        if [ -f "$STATE_FILE" ]; then
-            echo "  Steps completed: $(wc -l < "$STATE_FILE")/$TOTAL_STEPS"
-        fi
+    msg_ok "User: $USERNAME (home: $USER_HOME)"
+    msg_ok "SSH port: $SSH_PORT"
+    verify_hardening
+    ensure_packages curl jq openssl ca-certificates iproute2 cron
+    engine_init_state
+    CONF_FILE=""
+    if load_conf_upload; then
+        msg_ok "Found $CONF_FILE"
     fi
-    echo ""
 
-    for svc in ssh ufw nginx x-ui fail2ban; do
-        printf "  %-14s " "$svc:"
-        if [ "$svc" = "ufw" ]; then
-            if ufw status 2>/dev/null | grep -q "Status: active"; then
-                printf "${GREEN}active${NC}\n"
-            else
-                printf "${RED}inactive${NC}\n"
-            fi
-        elif systemctl is-active --quiet "$svc" 2>/dev/null; then
-            printf "${GREEN}active${NC}\n"
-        elif systemctl is-enabled --quiet "$svc" 2>/dev/null; then
-            printf "${YELLOW}enabled but stopped${NC}\n"
+    local active target
+    active="$(engine_get ACTIVE_SCHEME)"
+    target="${OPT_SCHEME:-${CONF_VALUES[SCHEME]:-}}"
+    if [ -z "$target" ]; then
+        if [ -n "$active" ] && { [ "$ASSUME_YES" = 1 ] || ! is_interactive; }; then
+            target="$active"
         else
-            printf "${RED}inactive${NC}\n"
+            choose_scheme "$active"
+            target="$CHOSEN_SCHEME"
         fi
-    done
+    fi
+    load_scheme "$target"
+
+    msg_step "Scheme"
+    scheme_describe
+    if [ -n "$active" ] && [ "$active" != "$SCHEME_ID" ]; then
+        msg_warn "Active scheme is '$active'; it will be deactivated before '$SCHEME_ID' is deployed."
+        warn_lost_provides "$active"
+    fi
+
+    msg_step "Guide"
+    apply_conf_values
+    scheme_guide
+    finish_inputs
+    params_save
+    if [ -n "$CONF_FILE" ]; then
+        rm -f "$CONF_FILE"
+        msg_info "$CONF_FILE imported into $SCHEME_STATE/params and removed"
+    fi
+    echo ""
+    msg_info "Inputs for '$SCHEME_ID':"
+    show_inputs
+    echo ""
+    confirm "Deploy scheme '$SCHEME_ID' with these values?" || die "Aborted. Inputs are saved; re-run to continue."
+
+    if [ -n "$active" ] && [ "$active" != "$SCHEME_ID" ]; then
+        msg_step "Deactivate '$active'"
+        deactivate_active_scheme
+    fi
+
+    msg_step "Base (independent of the scheme)"
+    fw_base "$SSH_PORT"
+    fail2ban_base "$SSH_PORT"
+    check_port_conflicts
+
+    engine_set ACTIVE_SCHEME "$SCHEME_ID" ACTIVE_STATE deploying ACTIVATED_AT ""
+    STEP_N=0
+    scheme_deploy
+
+    msg_step "Verify"
+    CHECK_FAILS=0 CHECK_WARNS=0
+    scheme_verify
+    engine_set ACTIVE_STATE active ACTIVATED_AT "$(date -Iseconds)"
+    print_links
 
     echo ""
+    if [ "$CHECK_FAILS" -gt 0 ]; then
+        msg_warn "Scheme '$SCHEME_ID' is deployed but $CHECK_FAILS check(s) failed - see above."
+    else
+        msg_ok "Scheme '$SCHEME_ID' deployed and verified."
+    fi
+    echo ""
+    msg_info "Useful commands:"
+    echo "  bash phase2-deploy.sh --status     # observed health of everything above"
+    echo "  bash phase2-deploy.sh --links      # client links again"
+    echo "  bash phase2-deploy.sh --update     # xray-core + geodata, tested before the swap"
+    echo "  bash phase2-deploy.sh --list       # other schemes; re-run to switch"
+    echo ""
+    msg_info "State (keep it - re-runs, switches and links read it): $VPSAD_STATE_DIR/"
+    [ "$CHECK_FAILS" -eq 0 ]
+}
 
-    # jemalloc check (only nginx — Go binaries are statically linked, LD_PRELOAD has no effect)
-    msg_info "jemalloc (nginx only — Go programs ignore LD_PRELOAD):"
-    PID=$(pgrep -x nginx -o 2>/dev/null || true)
-    if [ -n "$PID" ]; then
-        if grep -q libjemalloc "/proc/$PID/maps" 2>/dev/null; then
-            printf "  %-14s ${GREEN}jemalloc loaded${NC} (PID %s)\n" "nginx:" "$PID"
+cmd_status() {
+    require_root
+    banner "Status"
+    CHECK_FAILS=0 CHECK_WARNS=0
+    echo ""
+    echo "System:"
+    local u p pa cc active
+    u="${SUDO_USER:-}"
+    [ -n "$u" ] || u="$(getent passwd 1000 2>/dev/null | cut -d: -f1)" || u=""
+    p="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')" || p=""
+    pa="$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')" || pa=""
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" || cc=""
+    check_ok "user ${u:-unknown}, sshd port ${p:-unknown}"
+    [ "$pa" = no ] && check_ok "sshd: password login closed" || check_fail "sshd: PasswordAuthentication=${pa:-unknown}"
+    [ "$cc" = bbr ] && check_ok "TCP congestion control: bbr" || check_warn "TCP congestion control: ${cc:-unknown}"
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        check_ok "ufw active ($(ufw status | grep -c ALLOW) allow rules)"
+    else
+        check_fail "ufw not active"
+    fi
+    if systemctl is-active --quiet fail2ban; then
+        check_ok "fail2ban: $(fail2ban-client status 2>/dev/null | sed -n 's/.*Jail list:[[:space:]]*//p')"
+    else
+        check_fail "fail2ban not active"
+    fi
+    echo ""
+    echo "Components:"
+    [ -x "$XRAY_BIN" ] && check_ok "xray-core v$(xray_installed_version), geodata $(cat "$XRAY_ASSET_DIR/.vpsautodeploy-geodata" 2>/dev/null || echo unknown)" \
+        || check_ok "xray-core not installed"
+    [ -x "$NGINX_BIN" ] && check_ok "nginx build $(nginx_build_version)" || check_ok "nginx not installed"
+    active="$(engine_get ACTIVE_SCHEME)"
+    echo ""
+    if [ -z "$active" ]; then
+        echo "Scheme: none active"
+    else
+        load_scheme "$active"
+        if [ "$(engine_get ACTIVE_STATE)" = active ]; then
+            echo "Scheme: $active (since $(engine_get ACTIVATED_AT))"
         else
-            printf "  %-14s ${YELLOW}no jemalloc${NC} (PID %s)\n" "nginx:" "$PID"
+            echo "Scheme: $active"
+            check_fail "the deployment of '$active' did not finish - run phase2-deploy.sh again"
         fi
+        scheme_verify
+    fi
+    echo ""
+    if [ "$CHECK_FAILS" -gt 0 ]; then
+        msg_error "$CHECK_FAILS check(s) failed, $CHECK_WARNS warning(s)."
+        exit 1
+    fi
+    msg_ok "All checks passed ($CHECK_WARNS warning(s))."
+}
+
+cmd_links() {
+    require_root
+    local active
+    active="$(engine_get ACTIVE_SCHEME)"
+    [ -n "$active" ] || die "No active scheme."
+    load_scheme "$active"
+    print_links
+}
+
+cmd_update() {
+    require_root
+    take_lock
+    banner "Update xray-core and geodata"
+    local active version
+    active="$(engine_get ACTIVE_SCHEME)"
+    [ -n "$active" ] && load_scheme "$active"
+    version="$(xray_resolve_version "${XRAY_VERSION:-${SCHEME_XRAY_VERSION:-latest}}")"
+    msg_step "Xray-core v$version"
+    if [ "$(xray_installed_version)" = "$version" ]; then
+        msg_ok "Already on v$version"
     else
-        printf "  %-14s ${RED}not running${NC}\n" "nginx:"
+        xray_upgrade "$version"
     fi
-
-    echo ""
-
-    # UFW
-    msg_info "Firewall:"
-    ufw status 2>/dev/null | head -20
-    echo ""
-
-    # Certificates
-    if load_config; then
-        msg_info "Certificates:"
-        for domain in "$DIRECT_DOMAIN" "$CDN_DOMAIN"; do
-            CERT="/home/$USERNAME/xray_cert/$domain/fullchain.pem"
-            if [ -f "$CERT" ]; then
-                EXPIRY=$(openssl x509 -enddate -noout -in "$CERT" 2>/dev/null | cut -d= -f2)
-                printf "  %-30s ${GREEN}OK${NC} (expires: %s)\n" "$domain:" "$EXPIRY"
-            else
-                printf "  %-30s ${RED}MISSING${NC}\n" "$domain:"
-            fi
-        done
+    msg_step "Geodata"
+    xray_geodata_update
+    if [ -n "$active" ]; then
+        msg_step "Verify"
+        CHECK_FAILS=0 CHECK_WARNS=0
+        scheme_verify
+        [ "$CHECK_FAILS" -eq 0 ] || exit 1
     fi
+}
 
-    echo ""
-    exit 0
-fi
+cmd_deactivate() {
+    require_root
+    take_lock
+    local active
+    active="$(engine_get ACTIVE_SCHEME)"
+    [ -n "$active" ] || die "No active scheme."
+    msg_warn "This stops '$active': its firewall rules are removed, xray stops and nginx keeps serving only sites.d/."
+    msg_info "Not touched: SSH, the firewall baseline, fail2ban, certificates and the stored inputs."
+    confirm "Deactivate '$active'?" || die "Aborted."
+    deactivate_active_scheme
+}
 
-###############################################################################
-# --reset: restore backups and stop services
-###############################################################################
-if [ "${1:-}" = "--reset" ]; then
-    echo ""
-    echo "=========================================="
-    echo "  Reset: Restore backups & stop services"
-    echo "=========================================="
-    echo ""
-
-    msg_warn "This stops deployed services and restores the files phase2 modified."
-    msg_info "NOT touched: SSH config (harden-ssh owns it). UFW stays enabled."
-    read -r -p "Proceed? [y/N]: " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted."
-
-    # Stop services
-    for svc in nginx x-ui fail2ban; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            systemctl stop "$svc"
-            msg_ok "Stopped $svc"
-        fi
-    done
-
-    # Restore backed up files
-    if [ -d "$BACKUP_DIR" ]; then
-        msg_info "Restoring backups from $BACKUP_DIR:"
-        restore_file "/nginx/conf/nginx.conf"
-    else
-        msg_warn "No backup directory found at $BACKUP_DIR"
+cmd_generate_config() {
+    local id="${1:-}" out="${2:-}"
+    if [ -z "$id" ]; then
+        choose_scheme ""
+        id="$CHOSEN_SCHEME"
     fi
-
-    # Remove state so next run starts fresh
-    rm -f "$STATE_FILE"
-    msg_ok "State file cleared. Next run will re-execute all steps."
-    msg_info "Config file preserved at $CONFIG_FILE (inputs will be reused)."
-    echo ""
-    exit 0
-fi
-
-###############################################################################
-# Normal run
-###############################################################################
-
-echo ""
-echo "=========================================="
-echo "  Phase 2: Service Deployment"
-echo "=========================================="
-echo ""
-
-###############################################################################
-# Preflight: detect system facts, verify earlier phases, spot artifacts
-###############################################################################
-msg_step "Preflight"
-detect_system
-msg_ok "User: $USERNAME (home: $USER_HOME)"
-msg_ok "SSH port: $SSH_PORT"
-verify_hardening
-
-# Pre-uploaded artifacts (optional - they make the run zero-touch)
-for artifact in cf-fullchain.pem cf-privkey.pem x-ui.db; do
-    FOUND="$(find_artifact "$artifact")" || FOUND=""
-    if [ -n "$FOUND" ]; then
-        msg_ok "Found pre-uploaded $artifact: $FOUND"
+    load_scheme "$id"
+    out="${out:-$CONF_NAME}"
+    if [ -e "$out" ]; then
+        confirm "$out exists. Overwrite?" || die "Aborted."
     fi
+    generate_conf_template "$out"
+    msg_ok "Template for '$id' written to $out"
+    msg_info "Fill it in, upload it with any files the scheme asks for, then run phase2-deploy.sh:"
+    echo "  scp -P <ssh_port> $out <user>@<VPS_IP>:~/$CONF_NAME"
+}
+
+###############################################################################
+# Arguments
+###############################################################################
+CMD=deploy
+OPT_SCHEME=""
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --scheme)          OPT_SCHEME="${2:?--scheme needs an id}"; shift ;;
+        --yes|-y)          ASSUME_YES=1 ;;
+        --xray-version)    export XRAY_VERSION="${2:?--xray-version needs a version or 'latest'}"; shift ;;
+        --list)            CMD=list ;;
+        --status)          CMD=status ;;
+        --links)           CMD=links ;;
+        --update)          CMD=update ;;
+        --deactivate)      CMD=deactivate ;;
+        --generate-config) CMD=generate ;;
+        -h|--help)         usage; exit 0 ;;
+        -*)                usage; die "Unknown option: $1" ;;
+        *)                 POSITIONAL+=("$1") ;;
+    esac
+    shift
 done
 
-###############################################################################
-# User input — load saved/pre-filled config or collect interactively
-###############################################################################
-
-# validate_config: check all required fields are present and valid
-validate_config() {
-    validate_email "$ACME_EMAIL"
-    validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
-    validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
-    validate_domain "BACKEND_WEB" "$BACKEND_WEB"
-    validate_port "XUI_PANEL_PORT" "$XUI_PANEL_PORT"
-    # Paths: auto-generate if empty, then validate
-    if [ -z "${XHTTP_PATH:-}" ]; then
-        XHTTP_PATH=$(generate_random_path 32)
-    fi
-    validate_path "XHTTP_PATH" "$XHTTP_PATH"
-    if [ -z "${XUI_PANEL_PATH:-}" ]; then
-        XUI_PANEL_PATH=$(generate_random_path 32)
-    fi
-    validate_path "XUI_PANEL_PATH" "$XUI_PANEL_PATH"
-}
-
-show_config_summary() {
-    msg_info "Configuration summary:"
-    echo "  USERNAME       = $USERNAME (detected)"
-    echo "  SSH_PORT       = $SSH_PORT (detected)"
-    echo "  ACME_EMAIL     = $ACME_EMAIL"
-    echo "  DIRECT_DOMAIN  = $DIRECT_DOMAIN"
-    echo "  CDN_DOMAIN     = $CDN_DOMAIN"
-    echo "  XHTTP_PATH     = $XHTTP_PATH"
-    echo "  XUI_PANEL_PATH = $XUI_PANEL_PATH"
-    echo "  XUI_PANEL_PORT = $XUI_PANEL_PORT"
-    echo "  BACKEND_WEB    = $BACKEND_WEB"
-}
-
-if load_config; then
-    msg_ok "Loaded configuration from $CONFIG_FILE"
-    validate_config
-    echo ""
-    show_config_summary
-    echo ""
-    # Auto-continue after 10s so a pre-uploaded config stays zero-touch.
-    read -r -t 10 -p "Use this config? [Y/n] (auto-yes in 10s): " USE_SAVED || USE_SAVED=""
-    if [ -z "${USE_SAVED:-}" ]; then echo ""; fi
-    if [[ "${USE_SAVED:-}" =~ ^[Nn]$ ]]; then
-        rm -f "$CONFIG_FILE" "$STATE_FILE"
-        msg_info "Cleared saved config and state. Starting fresh."
-        exec "$0" "$@"
-    fi
-    # Re-save to normalize (auto-generated paths, stripped comments)
-    save_config
-else
-    echo "  No config file found."
-    echo ""
-    echo "  1) Upload config file — I will SCP vpsautodeploy.conf to VPS"
-    echo "  2) Interactive input  — Enter values one by one in this terminal"
-    echo ""
-    read -r -p "Choose [1/2]: " INPUT_MODE
-
-    if [ "$INPUT_MODE" = "1" ]; then
-        echo ""
-        msg_info "Upload vpsautodeploy.conf to any user's home directory:"
-        echo ""
-        echo "  scp -P $SSH_PORT vpsautodeploy.conf $USERNAME@<VPS_IP>:~/"
-        echo ""
-        msg_info "Tip: generate a template first with: bash phase2-deploy.sh --generate-config"
-        echo ""
-        msg_info "Waiting for vpsautodeploy.conf to appear..."
-
-        while ! load_config; do
-            sleep 2
-        done
-
-        msg_ok "Config file loaded from $CONFIG_FILE"
-        validate_config
-        echo ""
-        show_config_summary
-        echo ""
-        read -r -p "Confirm config is correct? Press Enter to continue (or Ctrl+C to abort)..."
-        save_config
-    else
-        msg_info "Collecting parameters interactively..."
-        msg_info "(Tip: run with --generate-config to create a template file instead)"
-        echo ""
-
-        prompt_value "ACME registration email" ""
-        ACME_EMAIL="$REPLY"; validate_email "$ACME_EMAIL"
-
-        prompt_value "Direct domain (e.g. b.example.com)" ""
-        DIRECT_DOMAIN="$REPLY"; validate_domain "DIRECT_DOMAIN" "$DIRECT_DOMAIN"
-
-        prompt_value "CDN origin domain (e.g. a.example.com)" ""
-        CDN_DOMAIN="$REPLY"; validate_domain "CDN_DOMAIN" "$CDN_DOMAIN"
-
-        DEFAULT_XHTTP=$(generate_random_path 32)
-        prompt_value "XHTTP location path" "$DEFAULT_XHTTP"
-        XHTTP_PATH="$REPLY"; validate_path "XHTTP_PATH" "$XHTTP_PATH"
-
-        DEFAULT_XUI_PATH=$(generate_random_path 32)
-        prompt_value "3x-ui panel location path" "$DEFAULT_XUI_PATH"
-        XUI_PANEL_PATH="$REPLY"; validate_path "XUI_PANEL_PATH" "$XUI_PANEL_PATH"
-
-        prompt_value "3x-ui panel listen port" "54321"
-        XUI_PANEL_PORT="$REPLY"; validate_port "XUI_PANEL_PORT" "$XUI_PANEL_PORT"
-
-        prompt_value "Upstream disguise website domain" "quarkus.io"
-        BACKEND_WEB="$REPLY"; validate_domain "BACKEND_WEB" "$BACKEND_WEB"
-
-        echo ""
-        show_config_summary
-        echo ""
-        read -r -p "Proceed? [y/N]: " CONFIRM
-        [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Aborted by user."
-
-        save_config
-        msg_ok "Configuration saved to $CONFIG_FILE"
-    fi
-fi
-
-# Show resume status
-if [ -f "$STATE_FILE" ]; then
-    DONE_COUNT=$(wc -l < "$STATE_FILE")
-    msg_info "Resuming — $DONE_COUNT step(s) already completed, will be skipped."
-fi
-
-###############################################################################
-# Step 1: UFW firewall
-###############################################################################
-if ! is_done "ufw"; then
-    msg_step "1/$TOTAL_STEPS: Configure UFW firewall"
-    apt install -y ufw
-    # Debian default IPV6=yes — no need to change.
-    # "default deny incoming" blocks all inbound (v4+v6), then allow rules whitelist specific ports.
-    # Allow rules use "from 0.0.0.0/0" so only IPv4 inbound is whitelisted; IPv6 inbound stays denied.
-    # "default allow outgoing" permits all outbound (v4+v6).
-    ufw default allow outgoing
-    ufw default deny incoming
-    ufw allow proto tcp from 0.0.0.0/0 to any port "$SSH_PORT"
-    ufw allow proto tcp from 0.0.0.0/0 to any port 80
-    ufw allow proto tcp from 0.0.0.0/0 to any port 443
-    ufw allow proto udp from 0.0.0.0/0 to any port 443
-    ufw --force enable
-    msg_ok "UFW enabled: SSH($SSH_PORT)/80/443(tcp+udp) allowed, IPv4 only"
-    mark_done "ufw"
-else
-    msg_step "1/$TOTAL_STEPS: Configure UFW firewall — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 2: Deploy custom-built Nginx
-###############################################################################
-if ! is_done "nginx"; then
-    msg_step "2/$TOTAL_STEPS: Deploy custom-built Nginx"
-    NGINX_URL="https://github.com/FinalisNothing/nginx-build/releases/latest/download/nginx-root.tar.gz"
-    msg_info "Downloading nginx from GitHub Release..."
-    curl -fLo /tmp/nginx-root.tar.gz "$NGINX_URL" \
-        || die "Failed to download nginx-root.tar.gz from GitHub Release"
-
-    tar -xzf /tmp/nginx-root.tar.gz -C /
-    msg_ok "Nginx extracted to /nginx"
-
-    chown -R root:nogroup /nginx/html/errors && chmod 750 /nginx/html/errors
-    if ls /nginx/html/errors/*.html >/dev/null 2>&1; then
-        chmod 640 /nginx/html/errors/*.html
-    fi
-    chown -R "$USERNAME":nogroup /nginx/acme_challenge
-    chmod 750 /nginx/acme_challenge/.well-known/acme-challenge
-    msg_ok "Nginx permissions configured"
-    mark_done "nginx"
-else
-    msg_step "2/$TOTAL_STEPS: Deploy custom-built Nginx — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 3: Install jemalloc (for nginx only — Go binaries ignore LD_PRELOAD)
-###############################################################################
-if ! is_done "jemalloc"; then
-    msg_step "3/$TOTAL_STEPS: Install jemalloc"
-    apt install -y libjemalloc2
-    mark_done "jemalloc"
-else
-    msg_step "3/$TOTAL_STEPS: Install jemalloc — SKIPPED (done)"
-fi
-# Always resolve path (needed by the service step on every run)
-JEMALLOC_PATH=$(find /usr/lib -name "libjemalloc.so*" | head -1)
-[ -n "$JEMALLOC_PATH" ] || die "Could not find libjemalloc.so"
-msg_ok "jemalloc at $JEMALLOC_PATH"
-
-###############################################################################
-# Step 4: Create nginx.service (with jemalloc LD_PRELOAD)
-###############################################################################
-if ! is_done "nginx-service"; then
-    msg_step "4/$TOTAL_STEPS: Create nginx systemd service"
-    render_template "$SCRIPT_DIR/templates/nginx.service" \
-        /etc/systemd/system/nginx.service \
-        "JEMALLOC_PATH=$JEMALLOC_PATH"
-    systemctl daemon-reload
-    systemctl enable nginx
-    msg_ok "nginx.service installed and enabled"
-    mark_done "nginx-service"
-else
-    msg_step "4/$TOTAL_STEPS: Create nginx systemd service — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 5: ACME certificate
-###############################################################################
-if ! is_done "acme"; then
-    msg_step "5/$TOTAL_STEPS: ACME certificate for $DIRECT_DOMAIN"
-
-    # Check if cert already exists (e.g., from a previous partial run)
-    CERT_FILE="/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/fullchain.pem"
-    if [ -f "$CERT_FILE" ]; then
-        msg_info "Certificate already exists at $CERT_FILE, skipping issuance"
-    else
-        # A-record sanity check: http-01 fails if DNS does not point here yet.
-        # Only blocks when a mismatch is proven; unknown IPs pass silently.
-        VPS_IP="$(curl -fsS4 --max-time 10 https://api.ipify.org 2>/dev/null)" || VPS_IP=""
-        DOMAIN_IP="$(getent ahostsv4 "$DIRECT_DOMAIN" 2>/dev/null | awk '{print $1; exit}')" || DOMAIN_IP=""
-        if [ -n "$VPS_IP" ] && [ -n "$DOMAIN_IP" ] && [ "$VPS_IP" != "$DOMAIN_IP" ]; then
-            msg_warn "$DIRECT_DOMAIN resolves to $DOMAIN_IP but this VPS looks like $VPS_IP."
-            read -r -p "Issue the certificate anyway? [y/N]: " CONT
-            [[ "$CONT" =~ ^[Yy]$ ]] || die "Fix the DNS A record, then re-run."
-        fi
-
-        render_template "$SCRIPT_DIR/templates/nginx-temp.conf.template" \
-            /nginx/conf/nginx.conf \
-            "DIRECT_DOMAIN=$DIRECT_DOMAIN"
-
-        systemctl start nginx || systemctl restart nginx
-        msg_ok "Nginx started with temporary ACME config"
-
-        msg_info "Installing acme.sh..."
-        sudo -i bash -c "curl https://get.acme.sh | sh -s email=$ACME_EMAIL"
-
-        msg_info "Issuing certificate for $DIRECT_DOMAIN..."
-        sudo -i /root/.acme.sh/acme.sh --issue \
-            -d "$DIRECT_DOMAIN" \
-            --webroot /nginx/acme_challenge \
-            -k 4096 \
-            --server zerossl
-
-        mkdir -p "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN"
-        mkdir -p "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
-
-        sudo -i /root/.acme.sh/acme.sh --install-cert -d "$DIRECT_DOMAIN" \
-            --fullchain-file "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/fullchain.pem" \
-            --key-file "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN/privkey.pem" \
-            --reloadcmd "/nginx/sbin/nginx -s reload"
-    fi
-
-    msg_ok "ACME certificate ready for $DIRECT_DOMAIN"
-    mark_done "acme"
-else
-    msg_step "5/$TOTAL_STEPS: ACME certificate — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 6: Cloudflare origin certificate (pre-uploaded file or paste)
-###############################################################################
-if ! is_done "cdn-cert"; then
-    msg_step "6/$TOTAL_STEPS: Cloudflare origin certificate for $CDN_DOMAIN"
-    CERT_DIR="/home/$USERNAME/xray_cert/$CDN_DOMAIN"
-    mkdir -p "$CERT_DIR"
-
-    CF_CERT_SRC="$(find_artifact cf-fullchain.pem)" || CF_CERT_SRC=""
-    CF_KEY_SRC="$(find_artifact cf-privkey.pem)" || CF_KEY_SRC=""
-
-    if [ -n "$CF_CERT_SRC" ] && [ -n "$CF_KEY_SRC" ]; then
-        msg_info "Using pre-uploaded origin cert: $CF_CERT_SRC + $CF_KEY_SRC"
-        wait_until_stable "$CF_CERT_SRC"
-        wait_until_stable "$CF_KEY_SRC"
-        # mv, not cp: don't leave a stray private key in a home directory
-        mv "$CF_CERT_SRC" "$CERT_DIR/fullchain.pem"
-        mv "$CF_KEY_SRC" "$CERT_DIR/privkey.pem"
-    else
-        echo ""
-        msg_info "Paste the fullchain.pem for $CDN_DOMAIN (Cloudflare origin cert)."
-        msg_info "End with a line containing only 'EOF':"
-        echo ""
-        CF_CERT=""
-        while IFS= read -r line; do
-            [ "$line" = "EOF" ] && break
-            CF_CERT="${CF_CERT}${line}"$'\n'
-        done
-        printf '%s' "$CF_CERT" > "$CERT_DIR/fullchain.pem"
-
-        echo ""
-        msg_info "Paste the privkey.pem for $CDN_DOMAIN (Cloudflare origin key)."
-        msg_info "End with a line containing only 'EOF':"
-        echo ""
-        CF_KEY=""
-        while IFS= read -r line; do
-            [ "$line" = "EOF" ] && break
-            CF_KEY="${CF_KEY}${line}"$'\n'
-        done
-        printf '%s' "$CF_KEY" > "$CERT_DIR/privkey.pem"
-    fi
-
-    openssl x509 -noout -in "$CERT_DIR/fullchain.pem" 2>/dev/null \
-        || die "$CERT_DIR/fullchain.pem is not a valid certificate. Re-run this step."
-    openssl pkey -noout -in "$CERT_DIR/privkey.pem" 2>/dev/null \
-        || die "$CERT_DIR/privkey.pem is not a valid private key. Re-run this step."
-
-    msg_ok "Cloudflare origin cert installed for $CDN_DOMAIN"
-    mark_done "cdn-cert"
-else
-    msg_step "6/$TOTAL_STEPS: Cloudflare origin certificate — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 7: Certificate directory permissions
-###############################################################################
-if ! is_done "cert-perms"; then
-    msg_step "7/$TOTAL_STEPS: Set certificate directory permissions"
-    chmod 700 "/home/$USERNAME/xray_cert"
-    chmod 700 "/home/$USERNAME/xray_cert/$DIRECT_DOMAIN"
-    chmod 700 "/home/$USERNAME/xray_cert/$CDN_DOMAIN"
-    chmod 600 "/home/$USERNAME/xray_cert"/*/*.pem
-    msg_ok "Certificate permissions locked down"
-    mark_done "cert-perms"
-else
-    msg_step "7/$TOTAL_STEPS: Set certificate directory permissions — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 8: Cloudflare geo + final nginx.conf
-###############################################################################
-if ! is_done "nginx-conf"; then
-    msg_step "8/$TOTAL_STEPS: Cloudflare geo + final nginx.conf"
-
-    # The updater owns cloudflare-ips.geo (and later the fail2ban ignoreip).
-    # fail2ban is not installed yet - the updater skips that target for now;
-    # fail2ban/deploy.sh runs it again in step 11.
-    install -o root -g root -m 700 "$SCRIPT_DIR/fail2ban/update-cloudflare-ips.sh" \
-        /usr/local/bin/update-cloudflare-ips.sh
-    /usr/local/bin/update-cloudflare-ips.sh
-
-    systemctl stop nginx || true
-    backup_file "/nginx/conf/nginx.conf"
-
-    render_template "$SCRIPT_DIR/templates/nginx.conf.template" \
-        /nginx/conf/nginx.conf \
-        "DIRECT_DOMAIN=$DIRECT_DOMAIN" \
-        "CDN_DOMAIN=$CDN_DOMAIN" \
-        "USERNAME=$USERNAME" \
-        "XHTTP_PATH=$XHTTP_PATH" \
-        "XUI_PANEL_PATH=$XUI_PANEL_PATH" \
-        "XUI_PANEL_PORT=$XUI_PANEL_PORT" \
-        "BACKEND_WEB=$BACKEND_WEB"
-
-    chown root:root /nginx/conf/nginx.conf
-    chmod 600 /nginx/conf/nginx.conf
-    /nginx/sbin/nginx -t || die "nginx config test failed"
-    systemctl start nginx
-    msg_ok "cloudflare-ips.geo generated, final nginx.conf deployed, nginx running"
-    mark_done "nginx-conf"
-else
-    msg_step "8/$TOTAL_STEPS: Cloudflare geo + final nginx.conf — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 9: Install 3x-ui
-###############################################################################
-if ! is_done "xui"; then
-    msg_step "9/$TOTAL_STEPS: Install 3x-ui"
-    curl -Ls -o /tmp/x-ui-install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
-    sed -i 's/^[[:space:]]*config_after_install$/#config_after_install/' /tmp/x-ui-install.sh
-    bash /tmp/x-ui-install.sh
-    msg_ok "3x-ui installed (interactive config skipped)"
-    mark_done "xui"
-else
-    msg_step "9/$TOTAL_STEPS: Install 3x-ui — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 10: Restore x-ui.db
-###############################################################################
-if ! is_done "xui-db"; then
-    msg_step "10/$TOTAL_STEPS: Restore x-ui.db"
-
-    DB_SOURCE="$(find_artifact x-ui.db)" || DB_SOURCE=""
-
-    if [ -z "$DB_SOURCE" ]; then
-        echo ""
-        msg_info "Upload your x-ui.db to the VPS from another terminal:"
-        msg_info "(Note: root login is disabled; use the $USERNAME account)"
-        echo ""
-        echo "  scp -P $SSH_PORT x-ui.db $USERNAME@<VPS_IP>:~/"
-        echo ""
-        msg_info "Waiting for x-ui.db to appear (Ctrl+C to abort)..."
-        while [ -z "$DB_SOURCE" ]; do
-            sleep 2
-            DB_SOURCE="$(find_artifact x-ui.db)" || DB_SOURCE=""
-        done
-    fi
-
-    msg_ok "Found x-ui.db at $DB_SOURCE"
-    msg_info "Waiting for the upload to finish (size must stop changing)..."
-    wait_until_stable "$DB_SOURCE"
-
-    systemctl stop x-ui
-    cp "$DB_SOURCE" /etc/x-ui/x-ui.db
-    /usr/local/x-ui/x-ui migrate
-    systemctl start x-ui
-    msg_ok "x-ui.db restored, migrated, and x-ui restarted"
-    mark_done "xui-db"
-else
-    msg_step "10/$TOTAL_STEPS: Restore x-ui.db — SKIPPED (done)"
-fi
-
-###############################################################################
-# Step 11: Deploy Fail2ban
-###############################################################################
-if ! is_done "fail2ban"; then
-    msg_step "11/$TOTAL_STEPS: Deploy Fail2ban"
-    SSH_PORT="$SSH_PORT" bash "$SCRIPT_DIR/fail2ban/deploy.sh"
-    msg_ok "Fail2ban deployed"
-    mark_done "fail2ban"
-else
-    msg_step "11/$TOTAL_STEPS: Deploy Fail2ban — SKIPPED (done)"
-fi
-
-###############################################################################
-# Done
-###############################################################################
-
-echo ""
-echo "=========================================="
-echo "  Phase 2: Deployment Complete!"
-echo "=========================================="
-echo ""
-msg_info "Your services:"
-echo "  3x-ui panel : https://$DIRECT_DOMAIN/$XUI_PANEL_PATH/"
-echo "  XHTTP path  : /$XHTTP_PATH"
-echo ""
-msg_info "Login/SSH were not touched — phase0 and harden-ssh own them."
-echo ""
-msg_info "Useful commands:"
-echo "  bash phase2-deploy.sh --status              # Show all service status"
-echo "  bash phase2-deploy.sh --reset               # Restore backups, stop services"
-echo "  bash phase2-deploy.sh --generate-config     # Generate config template"
-echo "  ufw status                                  # Check firewall"
-echo "  fail2ban-client status                      # Check fail2ban jails"
-echo ""
-msg_info "State files (safe to delete after successful deployment):"
-echo "  $CONFIG_FILE   # Saved inputs (service parameters, no credentials)"
-echo "  $STATE_FILE    # Completed steps"
-echo "  $BACKUP_DIR/   # Config backups"
-echo ""
+case "$CMD" in
+    deploy)     cmd_deploy ;;
+    list)       list_schemes ;;
+    status)     cmd_status ;;
+    links)      cmd_links ;;
+    update)     cmd_update ;;
+    deactivate) cmd_deactivate ;;
+    generate)   cmd_generate_config "${POSITIONAL[0]:-}" "${POSITIONAL[1]:-}" ;;
+esac

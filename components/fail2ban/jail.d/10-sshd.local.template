@@ -1,5 +1,5 @@
 # /etc/fail2ban/jail.d/10-sshd.local
-# Rendered from 10-sshd.local.template by deploy.sh ({{SSH_PORT}}).
+# Rendered from 10-sshd.local.template by the fail2ban component (port {{SSH_PORT}}).
 #
 # backend = systemd, explicitly: the minimal Debian 13 this repo targets
 # ships no rsyslog, so /var/log/auth.log does not exist - sshd logs only to

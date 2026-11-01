@@ -14,9 +14,9 @@
 #
 # Target-tolerant: updates whichever of the two targets exists and reloads
 # only services that are actually running, so it can be called at any point
-# of the deployment (phase2 calls it before fail2ban exists; fail2ban's
-# deploy.sh calls it again once the jails are in place; a monthly cron
-# keeps both fresh).
+# of the deployment (the nginx component runs it before its final config is
+# activated, the fail2ban component again once the jails are in place; a
+# monthly cron keeps both fresh).
 
 set -euo pipefail
 
