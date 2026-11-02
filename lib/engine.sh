@@ -570,13 +570,22 @@ check_port_conflicts() {
 }
 
 # Runs in a subshell: loading the old scheme must not touch the new one.
+# If the old scheme no longer exists in the repository (renamed, removed),
+# what it owned is still found: firewall rules by its tag, and every
+# component that has a release function.
 deactivate_active_scheme() {
     local active
     active="$(engine_get ACTIVE_SCHEME)"
     [ -n "$active" ] || return 0
     CURRENT_STEP="deactivate $active"
     (
-        load_scheme "$active"
+        if scheme_path "$active" >/dev/null; then
+            load_scheme "$active"
+        else
+            msg_warn "Scheme '$active' is no longer in this repository; removing what it can have owned."
+            SCHEME_ID="$active"
+            SCHEME_COMPONENTS=(xray nginx)
+        fi
         msg_info "Deactivating scheme '$active'"
         if declare -F scheme_deactivate >/dev/null; then
             scheme_deactivate
@@ -598,6 +607,7 @@ deactivate_active_scheme() {
 warn_lost_provides() {
     local active="$1" line
     local -a old=()
+    scheme_path "$active" >/dev/null || return 0
     mapfile -t old < <( load_scheme "$active"; printf '%s\n' "${SCHEME_PROVIDES[@]}" )
     for line in "${old[@]}"; do
         [ -n "$line" ] || continue

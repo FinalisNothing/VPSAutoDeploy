@@ -9,7 +9,9 @@
 #   3. a second run converges without changing anything
 #   4. switch to the e2e-only scheme: the old scheme's ports, nginx server
 #      blocks and xray config are gone, the new one works
-#   5. switch back: the same keys and links return, clients work again
+#   5. switch back while the e2e scheme is no longer visible (as if removed
+#      from the repo): it is still cleaned up; the same keys and links return
+#   5b. --update to another release and back, clients working afterwards
 #   6. --deactivate leaves only the machine baseline
 #
 # usage: tests/e2e/run.sh [--keep]   (--keep leaves the container running)
@@ -35,6 +37,11 @@ deploy() {  # deploy LOGNAME ARGS... (as root after `sudo -i` from the test user
     shift
     docker exec -e SUDO_USER=tester -e VPSAD_SCHEME_PATH=/opt/VPSAutoDeploy/tests/e2e/schemes \
         "$NAME" bash /opt/VPSAutoDeploy/phase2-deploy.sh "$@" > "$log" 2>&1
+}
+deploy_repo_only() {  # the same, but the e2e-only scheme is not visible (as if removed from the repo)
+    local log="$OUT/$1.log"
+    shift
+    docker exec -e SUDO_USER=tester "$NAME" bash /opt/VPSAutoDeploy/phase2-deploy.sh "$@" > "$log" 2>&1
 }
 expect() {  # expect DESCRIPTION COMMAND (run inside the container)
     if in_ct "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi
@@ -106,13 +113,24 @@ in_ct 'cat /etc/vpsautodeploy/schemes/e2e-reality-8443/links.txt' > "$OUT/links-
 if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/e2e-reality-8443/links.txt' \
     > "$OUT/clients-e2e.log" 2>&1; then pass "e2e scheme client connects"; else fail "e2e client: $(cat "$OUT/clients-e2e.log")"; fi
 
-echo "== 5. switch back"
-deploy deploy-4 --yes --scheme nginx-xray-443-fallback && pass "switch back exited 0" || fail "switch back exited non-zero"
+echo "== 5. switch back (the active e2e scheme is no longer in the repository)"
+deploy_repo_only deploy-4 --yes --scheme nginx-xray-443-fallback && pass "switch back exited 0" || fail "switch back exited non-zero"
+grep -q "is no longer in this repository" "$OUT/deploy-4.log" \
+    && pass "a scheme missing from the repo is still deactivated" || fail "missing-scheme fallback not taken"
 in_ct 'cat /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' > "$OUT/links-2.txt"
 cmp -s "$OUT/links-1.txt" "$OUT/links-2.txt" && pass "same keys and links as before the switch" || fail "links changed across the switch"
 expect "e2e scheme's firewall rule removed" '! ufw show added | grep -q "vpsautodeploy:e2e-reality-8443"'
 if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' \
     > "$OUT/clients-2.log" 2>&1; then pass "all 4 clients connect again"; else fail "clients after switch back: $(grep FAIL "$OUT/clients-2.log")"; fi
+
+echo "== 5b. update: another release, then back to the pinned one"
+deploy update-1 --update --xray-version 26.10.21 && pass "--update to 26.10.21 exited 0" || fail "--update to 26.10.21 failed"
+expect "xray 26.10.21 is running" '[ "$(xray version | awk "NR==1{print \$2}")" = 26.10.21 ] && systemctl is-active --quiet xray'
+deploy update-2 --update && pass "--update back to the pinned version exited 0" || fail "--update back failed"
+expect "xray 26.10.31 is running, one rollback version kept" \
+    '[ "$(xray version | awk "NR==1{print \$2}")" = 26.10.31 ] && [ "$(ls /usr/local/lib/vpsautodeploy/xray | wc -l)" = 2 ]'
+if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' \
+    > "$OUT/clients-3.log" 2>&1; then pass "all 4 clients connect after the updates"; else fail "clients after update: $(grep FAIL "$OUT/clients-3.log")"; fi
 
 echo "== 6. deactivate"
 deploy deactivate --deactivate --yes && pass "--deactivate exited 0" || fail "--deactivate exited non-zero"
