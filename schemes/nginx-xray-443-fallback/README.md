@@ -55,8 +55,8 @@ The VPS needs IPv6 egress (Google and YouTube leave through IPv6).
 | `CDN_DOMAIN` | XHTTP through Cloudflare |
 | `BACKEND_WEB` | the website the camouflage site mirrors (default `quarkus.io`) |
 | `XHTTP_PATH` | XHTTP path behind nginx (random by default) |
-| advanced | `XHTTP_REALITY_PATH`, `WARP_PROXY_PORT` (39641), link fingerprints, client stats names, WARP peer/endpoint |
-| secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortIds, VLESS decryption, WARP registration — generated on the VPS when empty |
+| advanced | `XHTTP_REALITY_PATH`, `WARP_PROXY_PORT` (39641), link fingerprints, WARP peer/endpoint |
+| secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortId, VLESS decryption, WARP registration — generated on the VPS when empty |
 
 ## Routing
 
@@ -64,7 +64,6 @@ First match wins:
 
 | Traffic | Outbound |
 |---|---|
-| xray API (`api` inbound) | `api` |
 | the local WARP proxy (`cpa-warp-proxy` inbound) | `warp` |
 | BitTorrent | blocked |
 | `featureassets.org`, `geosite:google`, `geosite:youtube` | `IPV6OUT` (freedom, IPv6) |
@@ -80,8 +79,6 @@ First match wins:
 | Endpoint | What |
 |---|---|
 | `127.0.0.1:39641` | SOCKS5/HTTP proxy without auth; everything leaves through WARP |
-| `127.0.0.1:62789` | xray API (Handler, Logger, Stats): `xray api statsquery --server=127.0.0.1:62789` |
-| `127.0.0.1:11111` | xray metrics (`/debug/vars`, pprof) |
 
 ## Values that only work together
 
@@ -97,6 +94,8 @@ First match wins:
 - The WARP outbound uses a kernel TUN (xray has `CAP_NET_ADMIN`), which sets
   `rp_filter=0` and enables IPv6 for all interfaces, and adds policy routing
   rules for the WARP addresses while xray runs.
-- `testseed [0, 256, 900, 1400]` on the REALITY inbound: Vision padding of
-  0–1400 random bytes on every padded record (an experimental Xray-core option).
+- The WARP endpoint has A and AAAA records and xray picks one at random, so
+  `sockopt.domainStrategy: ForceIPv4v6` pins it to IPv4 (on a VPS without IPv6
+  an AAAA pick would leave WARP dead until the next restart). Domains inside
+  the tunnel are not affected: they resolve through it, via 1.1.1.1.
 - `loglevel: debug` — logs rotate daily, 7 kept.

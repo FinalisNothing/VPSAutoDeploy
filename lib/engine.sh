@@ -566,7 +566,7 @@ check_port_conflicts() {
             bad=1
         done < <(port_listeners "$spec")
     done
-    [ "$bad" -eq 0 ] || die "Free the ports above first (an old 3x-ui install: systemctl disable --now x-ui)."
+    [ "$bad" -eq 0 ] || die "Free the ports above first."
 }
 
 # Runs in a subshell: loading the old scheme must not touch the new one.

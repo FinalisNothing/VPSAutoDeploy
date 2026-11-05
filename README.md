@@ -1,8 +1,8 @@
 # VPSAutoDeploy
 
 Automated VPS deployment for Debian 13: a hardened base system, then a
-**proxy scheme** of your choice running on bare Xray-core — no panel, no
-database. A scheme is one complete way of running the proxy (inputs, guide,
+**proxy scheme** of your choice running on bare Xray-core. A scheme is one
+complete way of running the proxy (inputs, guide,
 deployment, checks, client links); switching to another scheme later is one
 command and leaves the rest of the machine alone.
 
@@ -216,7 +216,7 @@ VPSAutoDeploy/
 | Geodata | [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) | `.sha256sum` verified; active config tested against new files first | Category names may change |
 | nginx build | [FinalisNothing/nginx-build](https://github.com/FinalisNothing/nginx-build) | `SHA256SUMS.txt` verified; needs x86-64-v2 | — |
 | acme.sh | [get.acme.sh](https://github.com/acmesh-official/acme.sh) | Downloaded, then run; ZeroSSL, HTTP-01 on nginx | Installer behaviour may change |
-| Cloudflare WARP API | `api.cloudflareclient.com/v0a2158/reg` | Device registration (same call 3x-ui makes); values can be supplied instead | Undocumented API |
+| Cloudflare WARP API | `api.cloudflareclient.com/v0a2158/reg` | Device registration; values can be supplied instead | Undocumented API |
 | Cloudflare IP lists | `cloudflare.com/ips-v4`, `ips-v6` | Sanity-checked (count, CIDR syntax) before use | — |
 
 ## Testing

@@ -1,5 +1,5 @@
 #!/bin/bash
-# components/xray/component.sh - Bare Xray-core, managed without any panel.
+# components/xray/component.sh - Bare Xray-core.
 #
 # Layout (the same paths as the official Xray-install):
 #   /usr/local/bin/xray                 symlink to the active version below
@@ -10,7 +10,7 @@
 #
 # xray runs as the unprivileged user "xray" with CAP_NET_BIND_SERVICE (port
 # 443) and CAP_NET_ADMIN. The latter lets a WireGuard outbound use a kernel
-# TUN, exactly as when a panel ran xray as root.
+# TUN, as it would when run as root.
 #
 # Config checks run as "xray" WITHOUT capabilities: `xray run -test` builds the
 # whole core, and with CAP_NET_ADMIN a WireGuard outbound would create a real
@@ -225,7 +225,7 @@ xray_upgrade() {
     msg_ok "Xray-core is now v$version"
 }
 
-# Loyalsoldier geodata (the set 3x-ui ships): checksum-verified, and only
+# Loyalsoldier geodata: checksum-verified, and only
 # swapped in after the active config passes a test against it.
 xray_geodata_update() {
     local tag tmp f want got

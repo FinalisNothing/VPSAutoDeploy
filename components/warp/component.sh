@@ -1,10 +1,9 @@
 #!/bin/bash
 # components/warp/component.sh - Register a free Cloudflare WARP device.
 #
-# Same API call the 3x-ui panel makes. The result is everything a WireGuard
-# outbound needs; nothing else on the machine changes. If Cloudflare changes
-# this API, register with any other tool (wgcf, a panel) and put the values
-# into the scheme's WARP_* inputs instead.
+# The result is everything a WireGuard outbound needs; nothing else on the
+# machine changes. If Cloudflare changes this API, register with any other
+# tool (wgcf, ...) and put the values into the scheme's WARP_* inputs instead.
 
 WARP_API=https://api.cloudflareclient.com/v0a2158/reg
 

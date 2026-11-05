@@ -4,51 +4,15 @@
     "error": "/var/log/xray/error.log",
     "loglevel": "debug"
   },
-  "api": {
-    "tag": "api",
-    "services": [
-      "HandlerService",
-      "LoggerService",
-      "StatsService"
-    ]
-  },
-  "stats": {},
-  "metrics": {
-    "tag": "metrics_out",
-    "listen": "127.0.0.1:11111"
-  },
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true
-    }
-  },
   "inbounds": [
     {
-      "tag": "api",
-      "listen": "127.0.0.1",
-      "port": 62789,
-      "protocol": "tunnel",
-      "settings": {
-        "rewriteAddress": "127.0.0.1"
-      }
-    },
-    {
       "tag": "reality_in",
-      "listen": "0.0.0.0",
       "port": 443,
       "protocol": "vless",
       "settings": {
         "clients": [
           {
             "id": "{{VISION_UUID}}",
-            "email": "{{VISION_EMAIL}}",
             "flow": "xtls-rprx-vision"
           }
         ],
@@ -57,12 +21,6 @@
           {
             "dest": "{{XHTTP_REALITY_SOCK}}"
           }
-        ],
-        "testseed": [
-          0,
-          256,
-          900,
-          1400
         ]
       },
       "streamSettings": {
@@ -77,11 +35,6 @@
           "privateKey": "{{REALITY_PRIVATE_KEY}}",
           "shortIds": "{{REALITY_SHORT_IDS:json}}",
           "mldsa65Seed": "{{REALITY_MLDSA65_SEED}}"
-        },
-        "rawSettings": {
-          "header": {
-            "type": "none"
-          }
         }
       },
       "sniffing": {
@@ -100,8 +53,7 @@
       "settings": {
         "clients": [
           {
-            "id": "{{XHTTP_TLS_UUID}}",
-            "email": "{{XHTTP_TLS_EMAIL}}"
+            "id": "{{XHTTP_TLS_UUID}}"
           }
         ],
         "decryption": "{{XHTTP_TLS_DECRYPTION}}"
@@ -110,11 +62,7 @@
         "network": "xhttp",
         "security": "none",
         "xhttpSettings": {
-          "path": "/{{XHTTP_PATH}}",
-          "scMaxBufferedPosts": 30,
-          "scMaxEachPostBytes": "1000000",
-          "scStreamUpServerSecs": "20-80",
-          "xPaddingBytes": "100-1000"
+          "path": "/{{XHTTP_PATH}}"
         }
       },
       "sniffing": {
@@ -133,8 +81,7 @@
       "settings": {
         "clients": [
           {
-            "id": "{{XHTTP_REALITY_UUID}}",
-            "email": "{{XHTTP_REALITY_EMAIL}}"
+            "id": "{{XHTTP_REALITY_UUID}}"
           }
         ],
         "decryption": "none"
@@ -143,11 +90,7 @@
         "network": "xhttp",
         "security": "none",
         "xhttpSettings": {
-          "path": "/{{XHTTP_REALITY_PATH}}",
-          "scMaxBufferedPosts": 30,
-          "scMaxEachPostBytes": "1000000",
-          "scStreamUpServerSecs": "20-80",
-          "xPaddingBytes": "100-1000"
+          "path": "/{{XHTTP_REALITY_PATH}}"
         }
       },
       "sniffing": {
@@ -163,31 +106,17 @@
       "tag": "cpa-warp-proxy",
       "listen": "127.0.0.1",
       "port": "{{WARP_PROXY_PORT:json}}",
-      "protocol": "mixed",
-      "settings": {
-        "ip": "127.0.0.1"
-      },
-      "sniffing": {
-        "enabled": false,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic",
-          "fakedns"
-        ]
-      }
+      "protocol": "mixed"
     }
   ],
   "outbounds": [
     {
       "tag": "direct",
-      "protocol": "freedom",
-      "settings": {}
+      "protocol": "freedom"
     },
     {
       "tag": "blocked",
-      "protocol": "blackhole",
-      "settings": {}
+      "protocol": "blackhole"
     },
     {
       "tag": "warp",
@@ -202,13 +131,14 @@
         "peers": [
           {
             "publicKey": "{{WARP_PEER_PUBLIC_KEY}}",
-            "allowedIPs": [
-              "0.0.0.0/0",
-              "::/0"
-            ],
             "endpoint": "{{WARP_ENDPOINT}}"
           }
         ]
+      },
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "ForceIPv4v6"
+        }
       }
     },
     {
@@ -240,12 +170,6 @@
   ],
   "routing": {
     "rules": [
-      {
-        "inboundTag": [
-          "api"
-        ],
-        "outboundTag": "api"
-      },
       {
         "inboundTag": [
           "cpa-warp-proxy"

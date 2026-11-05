@@ -81,7 +81,6 @@ expect "WARP outbound uses a kernel TUN (the -test run used the userspace stack)
     'grep -q "Using kernel TUN" /var/log/xray/error.log'
 expect "ufw: 443/tcp, 80/tcp, 443/udp allowed with the scheme comment" \
     '[ "$(ufw show added | grep -c "vpsautodeploy:nginx-xray-443-fallback")" = 3 ]'
-expect "no 3x-ui anywhere" '! systemctl cat x-ui >/dev/null 2>&1 && [ ! -e /etc/x-ui ]'
 in_ct 'cat /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' > "$OUT/links-1.txt"
 [ "$(grep -c '^vless://' "$OUT/links-1.txt")" = 4 ] && pass "4 client links" || fail "expected 4 client links"
 

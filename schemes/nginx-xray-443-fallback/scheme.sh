@@ -56,9 +56,6 @@ scheme_inputs() {
     input WARP_PROXY_PORT port   "Local proxy port (egress via WARP) for other services" --advanced --default 39641
     input REALITY_FINGERPRINT word "uTLS fingerprint in the REALITY links" --advanced --default firefox
     input TLS_FINGERPRINT word   "uTLS fingerprint in the TLS/CDN links" --advanced --default chrome
-    input VISION_EMAIL    word   "Stats name of the REALITY Vision client" --advanced --default reality-vision
-    input XHTTP_TLS_EMAIL word   "Stats name of the XHTTP TLS/CDN client" --advanced --default xhttp-tls
-    input XHTTP_REALITY_EMAIL word "Stats name of the XHTTP REALITY client" --advanced --default xhttp-reality
 
     input VISION_UUID          uuid     "UUID of the REALITY Vision client" --secret
     input XHTTP_TLS_UUID       uuid     "UUID of the XHTTP TLS/CDN client" --secret
@@ -155,13 +152,9 @@ scheme_nginx_conf() {
     rm -f "$tmp"
 }
 
-# 8 shortIds of 2..16 hex chars in random order (what 3x-ui generates).
+# One shortId: every link of this scheme uses the same one.
 scheme_short_ids() {
-    local n ids=()
-    for n in $(printf '%s\n' 2 4 6 8 10 12 14 16 | shuf); do
-        ids+=("$(random_hex "$n")")
-    done
-    printf '%s\n' "${ids[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))'
+    jq -nc --arg id "$(random_hex 16)" '[$id]'
 }
 
 scheme_vless_decryption() {
@@ -197,7 +190,7 @@ scheme_warp() {
     params_save
 }
 
-# Socket files a different user left behind (e.g. xray run as root by a panel)
+# Socket files a different user left behind (e.g. an xray that ran as root)
 # would make xray fail to listen; nobody can be using them if nothing listens.
 scheme_clear_stale_socket() {
     local sock="$1" f
@@ -270,8 +263,13 @@ scheme_verify() {
         fi
     done
 
-    trace="$(curl -sS --max-time 20 -x "socks5h://127.0.0.1:$(param WARP_PROXY_PORT)" \
-        https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+    # The tunnel only comes up with its first packet, so the first request
+    # after a restart may fail.
+    for _ in 1 2 3; do
+        trace="$(curl -sS --max-time 20 -x "socks5h://127.0.0.1:$(param WARP_PROXY_PORT)" \
+            https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+        grep -qE '^warp=(on|plus)$' <<<"$trace" && break
+    done
     if grep -qE '^warp=(on|plus)$' <<<"$trace"; then
         check_ok "local proxy 127.0.0.1:$(param WARP_PROXY_PORT) egresses via WARP ($(grep '^ip=' <<<"$trace"))"
     else
