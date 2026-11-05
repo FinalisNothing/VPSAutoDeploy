@@ -357,6 +357,14 @@ check_unix_socket() {
     fi
 }
 
+# Observed health of the loaded scheme, plus what it relies on from the machine.
+engine_verify() {
+    scheme_verify
+    if [[ " ${SCHEME_COMPONENTS[*]} " == *" xray "* ]]; then
+        xray_egress_verify
+    fi
+}
+
 check_service() {
     local svc="$1"
     if systemctl is-active --quiet "$svc"; then

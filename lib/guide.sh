@@ -81,31 +81,33 @@ guide_check_points_here() {
     fi
 }
 
-# The domain must resolve to Cloudflare edge addresses (orange cloud).
-guide_check_behind_cloudflare() {
-    local domain="$1" ips cidrs ip c ok=1
-    ips="$(resolve_a "$domain")"
-    if [ -z "$ips" ]; then
-        guide_problem "$domain has no A record yet." "Create it with proxy status Proxied (orange cloud)."
-        return 0
-    fi
-    if ! cidrs="$(curl -fsS --max-time 10 https://www.cloudflare.com/ips-v4 2>/dev/null)"; then
-        guide_problem "Cannot fetch Cloudflare's IP ranges, so '$domain is proxied' is unverified."
-        return 0
-    fi
+# Do all A records of DOMAIN lie in Cloudflare's ranges (orange cloud)?
+# 0 yes, 1 no, 2 unknown (no A record, or the ranges could not be fetched).
+resolves_to_cloudflare() {
+    local ips cidrs ip c hit
+    ips="$(resolve_a "$1")"
+    [ -n "$ips" ] || return 2
+    cidrs="$(curl -fsS --max-time 10 https://www.cloudflare.com/ips-v4 2>/dev/null)" || return 2
     while IFS= read -r ip; do
-        local hit=0
+        hit=0
         while IFS= read -r c; do
             [ -n "$c" ] && ip4_in_cidr "$ip" "$c" && { hit=1; break; }
         done <<<"$cidrs"
-        [ "$hit" -eq 1 ] || ok=0
+        [ "$hit" -eq 1 ] || return 1
     done <<<"$ips"
-    if [ "$ok" -eq 1 ]; then
-        msg_ok "$domain is proxied by Cloudflare"
-    else
-        guide_problem "$domain resolves to $(paste -sd' ' <<<"$ips"), which is not Cloudflare." \
-            "Set the record's proxy status to Proxied (orange cloud)."
-    fi
+}
+
+# The domain must resolve to Cloudflare edge addresses (orange cloud).
+guide_check_behind_cloudflare() {
+    local domain="$1" rc=0
+    resolves_to_cloudflare "$domain" || rc=$?
+    case "$rc" in
+        0) msg_ok "$domain is proxied by Cloudflare" ;;
+        1) guide_problem "$domain resolves to $(resolve_a "$domain" | paste -sd' ' -), which is not Cloudflare." \
+               "Set the record's proxy status to Proxied (orange cloud)." ;;
+        *) guide_problem "Cannot tell whether $domain is proxied by Cloudflare (no A record yet, or Cloudflare's IP ranges are unreachable)." \
+               "Create the A record with proxy status Proxied (orange cloud)." ;;
+    esac
 }
 
 guide_check_https() {

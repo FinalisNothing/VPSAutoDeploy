@@ -165,6 +165,32 @@ Every config is **tested before it replaces the running one** (`nginx -t`,
 up to `/etc/vpsautodeploy/backup/`, and a service that does not come up with
 the new config is rolled back.
 
+### Egress
+
+Where proxied traffic leaves the VPS belongs to the machine, not to a scheme.
+Each scheme brings its inbounds; phase2 adds one egress policy to them, the
+same for every scheme.
+
+**Default** (`components/xray/egress.json`), first match wins:
+
+| Traffic | Leaves |
+|---|---|
+| BitTorrent | blocked |
+| `geosite:google`, `geosite:youtube` | over IPv6 if the VPS has working IPv6 egress, otherwise direct (IPv4) |
+| `geosite:category-ads-all` | blocked |
+| `geosite:cn`, `*.cn`, `geoip:cn`, `geoip:private` | blocked |
+| everything else | direct |
+
+IPv6 is checked at every deployment run; `--status` says when the machine
+changed since (IPv6 added or lost) and a re-run is due.
+
+**Your own policy:** write `/etc/vpsautodeploy/egress.json` — start from the
+rendered default next to it (`egress.default.json`) — then run
+`phase2-deploy.sh`. It may set `outbounds`, `routing` and `dns`; it replaces the
+default for every scheme and is never overwritten by deployments, switches or
+updates. Like every config it is tested with `xray run -test` before it goes
+live. Remove the file and re-run to return to the default.
+
 ### Fail2ban layout
 
 Fail2ban config is deployed as `jail.d` drop-ins instead of one `jail.local`:
@@ -247,4 +273,6 @@ deactivates.
 | `/etc/vpsautodeploy/schemes/<id>/files/` | Uploaded files (e.g. origin certificate) | No |
 | `/etc/vpsautodeploy/schemes/<id>/links.txt` | Client links | Yes (`--links` recreates it) |
 | `/etc/vpsautodeploy/certs/` | TLS certificates | No |
+| `/etc/vpsautodeploy/egress.json` | Your egress policy, if you wrote one | No |
+| `/etc/vpsautodeploy/egress.default.json`, `egress.state` | The default egress as rendered for this VPS; which egress the running config has | Yes (the next run recreates them) |
 | `/etc/vpsautodeploy/backup/` | Configs replaced by later runs | Yes, once you are confident |

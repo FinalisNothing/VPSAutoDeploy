@@ -56,18 +56,11 @@ checks each item):
 | advanced | `XHTTP_REALITY_PATH`, link fingerprints |
 | secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortId, VLESS decryption — generated on the VPS when empty |
 
-## Routing
+## Egress
 
-First match wins:
-
-| Traffic | Outbound |
-|---|---|
-| BitTorrent | blocked |
-| `geosite:google`, `geosite:youtube` | `IPV6OUT` (freedom, IPv6) |
-| `geosite:category-ads-all` | blocked |
-| `geosite:cn`, `*.cn` | blocked |
-| `geoip:private`, `geoip:cn` | blocked |
-| everything else | `direct` |
+Where traffic leaves the VPS is not part of this scheme: `xray.json` holds the
+inbounds only, and the deployment composes it with the machine's egress
+policy (see "Egress" in the top-level README).
 
 ## Values that only work together
 

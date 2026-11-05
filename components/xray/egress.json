@@ -1,0 +1,58 @@
+{
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "IPV6OUT",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv6"
+        }
+      }
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "geosite:google",
+          "geosite:youtube"
+        ],
+        "outboundTag": "{{IPV6_OUT}}"
+      },
+      {
+        "domain": [
+          "geosite:category-ads-all"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "geosite:cn",
+          "regexp:.*\\.cn$"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "ip": [
+          "geoip:private",
+          "geoip:cn"
+        ],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
+}

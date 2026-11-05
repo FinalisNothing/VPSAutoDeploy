@@ -35,7 +35,7 @@ e2e_xray_conf() {
     local tmp
     tmp="$(mktemp)"
     render_template "$SCHEME_DIR/xray.json" "$tmp" json PARAMS
-    xray_apply_config "$tmp"
+    xray_apply_scheme "$tmp"
     rm -f "$tmp"
 }
 

@@ -32,7 +32,6 @@ SCHEME_SUMMARY=(
     "Four client entries, all on TCP 443: VLESS REALITY Vision; XHTTP over REALITY; XHTTP over TLS"
     "on the direct domain and through the Cloudflare CDN (both with VLESS post-quantum encryption)."
     "Everything else reaches nginx: a camouflage site mirroring another website, HTTP/3 included."
-    "Egress: Google/YouTube via IPv6; ads, CN, BitTorrent blocked; everything else direct."
     "You need: two domains on Cloudflare DNS (direct: DNS only, CDN: proxied), a Cloudflare Origin"
     "Certificate for the CDN domain, and an email for ZeroSSL."
 )
@@ -181,7 +180,7 @@ scheme_xray_conf() {
     render_template "$SCHEME_DIR/xray.json" "$tmp" json vals
     scheme_clear_stale_socket "$XHTTP_TLS_SOCK"
     scheme_clear_stale_socket "$XHTTP_REALITY_SOCK"
-    xray_apply_config "$tmp"
+    xray_apply_scheme "$tmp"
     rm -f "$tmp"
 }
 
@@ -230,12 +229,47 @@ scheme_verify() {
         fi
     done
 
-    code="$(curl -6 -sS -o /dev/null -w '%{http_code}' --max-time 10 https://www.google.com/generate_204 2>/dev/null || true)"
-    if [ "$code" = 204 ]; then
-        check_ok "IPv6 egress (Google/YouTube route) works"
+    # The checks above go to 127.0.0.1; these take the way clients take.
+    scheme_check_points_here "$d"
+    scheme_check_through_cloudflare "$c"
+}
+
+scheme_check_points_here() {
+    local domain="$1" ips mine
+    ips="$(resolve_a "$domain")"
+    mine="$(public_ipv4 || true)"
+    if [ -z "$ips" ]; then
+        check_warn "$domain does not resolve (no A record), so clients cannot reach it"
+    elif [ -z "$mine" ]; then
+        check_warn "cannot determine this VPS's public IPv4; $domain -> $(paste -sd' ' <<<"$ips") is unchecked"
+    elif grep -qxF "$mine" <<<"$ips"; then
+        check_ok "$domain resolves to this VPS ($mine)"
     else
-        check_warn "no IPv6 egress (HTTP ${code:-no response}); Google/YouTube via IPV6OUT will fail"
+        check_fail "$domain resolves to $(paste -sd' ' <<<"$ips"), not to this VPS ($mine)"
     fi
+}
+
+# A request through Cloudflare, the way CDN clients come in. Cloudflare's 52x
+# codes say which part of the dashboard setup is wrong.
+scheme_check_through_cloudflare() {
+    local domain="$1" code rc=0
+    resolves_to_cloudflare "$domain" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        check_warn "$domain does not resolve to Cloudflare: the CDN entry works only with its record Proxied (orange cloud)"
+        return 0
+    elif [ "$rc" -ne 0 ]; then
+        check_warn "cannot tell whether $domain is proxied by Cloudflare; the way through Cloudflare is unchecked"
+        return 0
+    fi
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$domain/" 2>/dev/null || true)"
+    case "$code" in
+        2??|3??) check_ok "https://$domain/ through Cloudflare reaches this VPS ($code)" ;;
+        521) check_fail "Cloudflare reaches no web server for $domain (HTTP 521): its A record in the Cloudflare dashboard must be this VPS ($(public_ipv4 || echo '?'))" ;;
+        522|523) check_fail "Cloudflare cannot connect to the origin of $domain (HTTP $code): check the A record's IP and the provider firewall for TCP 443" ;;
+        525) check_fail "Cloudflare's TLS handshake with this VPS failed for $domain (HTTP 525)" ;;
+        526) check_fail "Cloudflare rejects the origin certificate of $domain (HTTP 526): it must be a Cloudflare Origin Certificate covering $domain" ;;
+        *) check_fail "https://$domain/ through Cloudflare: HTTP ${code:-no response}" ;;
+    esac
 }
 
 # Client encryption string for a server decryption string: same mode and

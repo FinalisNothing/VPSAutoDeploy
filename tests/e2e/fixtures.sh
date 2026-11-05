@@ -26,6 +26,11 @@ leaf() {
 leaf direct.test
 leaf cdn.test
 
+# The direct domain points at this machine, as its A record would on a VPS.
+# cdn.test is left alone: there is no Cloudflare in here, so its checks warn.
+ip="$(curl -fsS4 --max-time 10 https://api.ipify.org)"
+printf '%s direct.test\n' "$ip" >> /etc/hosts
+
 install -m 644 root.pem /usr/local/share/ca-certificates/vpsad-e2e-root.crt
 update-ca-certificates >/dev/null 2>&1
 

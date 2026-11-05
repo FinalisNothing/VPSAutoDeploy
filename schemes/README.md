@@ -17,7 +17,7 @@ and an origin certificate before anything can be deployed.
 ```
 schemes/<id>/
 ├── scheme.sh      metadata, inputs, guide, steps, checks, links (sourced by the engine)
-├── xray.json      xray config template
+├── xray.json      xray config template: inbounds (egress comes from the machine)
 └── …              any other templates the steps render (nginx.conf, …)
 ```
 
@@ -77,6 +77,15 @@ guide's prompts.
   defined once — an input or a constant passed through `scheme_values` — never
   written twice.
 
+### Egress
+
+A scheme decides how clients come in, not where their traffic goes out. Its
+`xray.json` holds `log` and `inbounds`; `xray_apply_scheme` adds the machine's
+egress policy (README, "Egress"). Only if the scheme itself needs them (a
+chained proxy, a reverse tunnel) may it add `outbounds` and `routing.rules`:
+they come after the egress outbounds, whose first one stays the default, and
+before the egress rules.
+
 ## Rules
 
 1. **Secrets never enter the repository.** Keys, UUIDs and registrations are
@@ -84,7 +93,7 @@ guide's prompts.
 2. **Steps are idempotent** and check the machine before acting; a re-run
    converges. Never keep "done" markers instead of looking.
 3. **Shared services stay up.** Activate configs only through the component
-   functions (`nginx_apply_config`, `xray_apply_config`): they test the new
+   functions (`nginx_apply_config`, `xray_apply_scheme`): they test the new
    config, back up the old one, swap, and roll back if the service does not
    come up.
 4. **Touch only what the scheme owns.** Ports through `fw_open` (tagged with the
@@ -117,6 +126,7 @@ Defined in `components/<name>/component.sh` and available to every scheme:
 | `cert_chain_bytes HOST:PORT SNI` | Size of the served chain (REALITY's ML-DSA-65 needs > 3500 bytes from its target). |
 | `fail2ban_nginx`, `cloudflare_ips_update` | nginx jails; Cloudflare ranges for the nginx geo file and fail2ban's ignoreip. |
 | `xray_install VERSION` | Release binary (sha256-verified), `xray` user and unit, logrotate, Loyalsoldier geodata. |
+| `xray_apply_scheme FILE` | Composes a rendered `xray.json` with the egress policy in effect, then applies it like `xray_apply_config`. |
 | `xray_apply_config FILE` | `xray run -test` as the unprivileged user, back up, swap, restart, roll back. |
 | `xray_gen KIND`, `xray_derive KIND SECRET` | Keys from the installed binary; client halves (REALITY password, ML-DSA-65 verify, ML-KEM client key). |
 | `vless_link UUID HOST PORT NAME KEY=VALUE…` | Share link per XTLS/Xray-core discussion #716. |

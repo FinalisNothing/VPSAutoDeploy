@@ -180,7 +180,7 @@ cmd_deploy() {
 
     msg_step "Verify"
     CHECK_FAILS=0 CHECK_WARNS=0
-    scheme_verify
+    engine_verify
     engine_set ACTIVE_STATE active ACTIVATED_AT "$(date -Iseconds)"
     print_links
 
@@ -243,7 +243,7 @@ cmd_status() {
             echo "Scheme: $active"
             check_fail "the deployment of '$active' did not finish - run phase2-deploy.sh again"
         fi
-        scheme_verify
+        engine_verify
     fi
     echo ""
     if [ "$CHECK_FAILS" -gt 0 ]; then
@@ -281,7 +281,7 @@ cmd_update() {
     if [ -n "$active" ]; then
         msg_step "Verify"
         CHECK_FAILS=0 CHECK_WARNS=0
-        scheme_verify
+        engine_verify
         [ "$CHECK_FAILS" -eq 0 ] || exit 1
     fi
 }
