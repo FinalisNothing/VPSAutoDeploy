@@ -110,22 +110,17 @@ guide_check_behind_cloudflare() {
     esac
 }
 
-guide_check_https() {
-    local domain="$1" code
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$domain/" 2>/dev/null || true)"
-    if [[ "$code" =~ ^[23] ]]; then
-        msg_ok "https://$domain/ answers ($code)"
-    else
-        guide_problem "https://$domain/ does not answer normally (HTTP ${code:-no response})."
-    fi
-}
-
-guide_check_ipv6_egress() {
-    local why="$1" code
-    code="$(curl -6 -sS -o /dev/null -w '%{http_code}' --max-time 10 https://www.google.com/generate_204 2>/dev/null || true)"
-    if [ "$code" = 204 ]; then
-        msg_ok "IPv6 egress works"
-    else
-        guide_problem "This VPS has no working IPv6 egress (HTTP ${code:-no response})." "$why"
-    fi
+# A site to mirror must answer its own name with a page, not a redirect: the
+# mirror passes the redirect on and sends visitors to the real site.
+guide_check_mirrorable() {
+    local domain="$1" out code to
+    out="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 "https://$domain/" 2>/dev/null || true)"
+    code="${out%% *}"
+    to="${out#* }"
+    case "$code" in
+        2??) msg_ok "https://$domain/ answers with a page ($code)" ;;
+        3??) guide_problem "https://$domain/ redirects to ${to:-another address} (HTTP $code)." \
+                 "The mirror would send visitors there. Use the name it redirects to, if that is the same site." ;;
+        *)   guide_problem "https://$domain/ does not answer normally (HTTP ${code:-no response})." ;;
+    esac
 }

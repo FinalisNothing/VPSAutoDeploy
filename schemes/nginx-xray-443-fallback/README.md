@@ -51,7 +51,7 @@ checks each item):
 | `ACME_EMAIL` | ZeroSSL account |
 | `DIRECT_DOMAIN` | REALITY server name, camouflage site, XHTTP over TLS |
 | `CDN_DOMAIN` | XHTTP through Cloudflare |
-| `BACKEND_WEB` | the website the camouflage site mirrors (default `quarkus.io`) |
+| `BACKEND_WEB` | the website the camouflage site mirrors — no default, every deployment picks its own (see the guide's advice) |
 | `XHTTP_PATH` | XHTTP path behind nginx (random by default) |
 | advanced | `XHTTP_REALITY_PATH`, link fingerprints |
 | secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortId, VLESS decryption — generated on the VPS when empty |

@@ -47,8 +47,8 @@ scheme_inputs() {
     input ACME_EMAIL      email  "Email for the ZeroSSL (ACME) account"
     input DIRECT_DOMAIN   domain "Direct domain (A record -> this VPS, DNS only)"
     input CDN_DOMAIN      domain "CDN domain (A record -> this VPS, proxied by Cloudflare)"
-    input BACKEND_WEB     domain "Website the camouflage site mirrors" --default quarkus.io \
-        --help "A real HTTPS site; visitors who are not proxy clients see its pages."
+    input BACKEND_WEB     domain "Website the camouflage site mirrors (your own choice)" \
+        --help "Visitors who are not proxy clients see this site's pages under your domain. Pick one yourself - a default shared by everyone who runs this script would mark all their servers alike: a foreign HTTPS site with stable content (docs, a blog, media) that answers on its own name without redirecting. Never a login or payment page: mirroring one gets domains reported as phishing."
     input XHTTP_PATH      path   "XHTTP path behind nginx (TLS and CDN)" --default "$(random_alnum 32)"
     input XHTTP_REALITY_PATH path "XHTTP path over REALITY" --advanced --default "$(random_alnum 32)"
     input REALITY_FINGERPRINT word "uTLS fingerprint in the REALITY links" --advanced --default firefox
@@ -81,7 +81,7 @@ EOF
     [ "$(param CDN_DOMAIN)" != "$(param DIRECT_DOMAIN)" ] || die "CDN_DOMAIN must differ from DIRECT_DOMAIN."
     guide_check_behind_cloudflare "$(param CDN_DOMAIN)"
     ask BACKEND_WEB
-    guide_check_https "$(param BACKEND_WEB)"
+    guide_check_mirrorable "$(param BACKEND_WEB)"
     ask XHTTP_PATH
     ask_file CF_ORIGIN_CERT cf-fullchain.pem pem_cert_valid "Cloudflare Origin Certificate for $(param CDN_DOMAIN)"
     ask_file CF_ORIGIN_KEY cf-privkey.pem pem_key_valid "Cloudflare Origin Certificate private key"

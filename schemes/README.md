@@ -135,7 +135,7 @@ Engine helpers: `input`, `ask`, `ask_file`, `param`, `set_param`,
 `ensure_secret`, `step`, `check_*`, `check_listening`, `check_unix_socket`,
 `check_service`; guide helpers in `lib/guide.sh`: `guide_text`,
 `guide_check_points_here`, `guide_check_behind_cloudflare`,
-`guide_check_https`, `guide_problem`.
+`guide_check_mirrorable`, `guide_problem`.
 
 ## Adding a scheme
 
