@@ -378,7 +378,6 @@ load_scheme() {
     SCHEME_SUMMARY=()
     SCHEME_PORTS=()
     SCHEME_COMPONENTS=()
-    SCHEME_PROVIDES=()
     INPUT_ORDER=()
     INPUT_KIND=() INPUT_PROMPT=() INPUT_DEFAULT=() INPUT_FLAGS=() INPUT_HELP=()
     PARAMS=()
@@ -405,9 +404,6 @@ scheme_describe() {
         printf '      %s\n' "$line"
     done
     [ "${#SCHEME_PORTS[@]}" -gt 0 ] && printf '      Public ports: %s\n' "${SCHEME_PORTS[*]}"
-    for line in "${SCHEME_PROVIDES[@]}"; do
-        printf '      Provides to local services: %s\n' "$line"
-    done
 }
 
 list_schemes() {
@@ -601,19 +597,4 @@ deactivate_active_scheme() {
     engine_set ACTIVE_SCHEME "" ACTIVE_STATE "" ACTIVATED_AT ""
     CURRENT_STEP=""
     msg_ok "Scheme '$active' deactivated (its stored inputs are kept for a later switch back)"
-}
-
-# What other local services lose when the active scheme is replaced.
-warn_lost_provides() {
-    local active="$1" line
-    local -a old=()
-    scheme_path "$active" >/dev/null || return 0
-    mapfile -t old < <( load_scheme "$active"; printf '%s\n' "${SCHEME_PROVIDES[@]}" )
-    for line in "${old[@]}"; do
-        [ -n "$line" ] || continue
-        if ! printf '%s\n' "${SCHEME_PROVIDES[@]}" | grep -qxF "$line"; then
-            msg_warn "Scheme '$active' provides, and '$SCHEME_ID' does not: $line"
-            msg_warn "Local services that rely on it will stop working."
-        fi
-    done
 }

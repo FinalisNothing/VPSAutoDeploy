@@ -8,14 +8,8 @@
 #   /usr/local/etc/xray/config.json     the active scheme's rendered config
 #   /var/log/xray/                      logs (logrotate: daily, 7 kept)
 #
-# xray runs as the unprivileged user "xray" with CAP_NET_BIND_SERVICE (port
-# 443) and CAP_NET_ADMIN. The latter lets a WireGuard outbound use a kernel
-# TUN, as it would when run as root.
-#
-# Config checks run as "xray" WITHOUT capabilities: `xray run -test` builds the
-# whole core, and with CAP_NET_ADMIN a WireGuard outbound would create a real
-# TUN device, rewrite sysctls and leave policy routing rules behind. Without
-# it the outbound uses the userspace stack and the check has no side effects.
+# xray runs as the unprivileged user "xray" with only CAP_NET_BIND_SERVICE
+# (port 443). Config checks run as the same user, without capabilities.
 
 XRAY_BIN=/usr/local/bin/xray
 XRAY_LIB=/usr/local/lib/vpsautodeploy/xray
@@ -135,7 +129,7 @@ xray_install() {
     [ -s "$XRAY_ASSET_DIR/geoip.dat" ] && [ -s "$XRAY_ASSET_DIR/geosite.dat" ] || xray_geodata_update
 }
 
-# xray_test_config FILE [BIN] [ASSET_DIR] - see the header for why it drops privileges.
+# xray_test_config FILE [BIN] [ASSET_DIR]
 xray_test_config() {
     local file="$1" bin="${2:-$XRAY_BIN}" assets="${3:-$XRAY_ASSET_DIR}" out
     if ! out="$(runuser -u "$XRAY_USER" -- env XRAY_LOCATION_ASSET="$assets" "$bin" run -test -c "$file" 2>&1)"; then
@@ -275,7 +269,6 @@ xray_gen() {
         x25519-private) "$XRAY_BIN" x25519 | sed -n 's/^PrivateKey: //p' ;;
         mldsa65-seed)   "$XRAY_BIN" mldsa65 | sed -n 's/^Seed: //p' ;;
         mlkem768-seed)  "$XRAY_BIN" mlkem768 | sed -n 's/^Seed: //p' ;;
-        wg-private)     "$XRAY_BIN" wg | sed -n 's/^PrivateKey: //p' ;;
         *) die "internal: xray_gen $1" ;;
     esac
 }

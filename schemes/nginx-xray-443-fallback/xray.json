@@ -101,12 +101,6 @@
           "quic"
         ]
       }
-    },
-    {
-      "tag": "cpa-warp-proxy",
-      "listen": "127.0.0.1",
-      "port": "{{WARP_PROXY_PORT:json}}",
-      "protocol": "mixed"
     }
   ],
   "outbounds": [
@@ -119,38 +113,6 @@
       "protocol": "blackhole"
     },
     {
-      "tag": "warp",
-      "protocol": "wireguard",
-      "settings": {
-        "secretKey": "{{WARP_SECRET_KEY}}",
-        "address": [
-          "{{WARP_ADDRESS_V4}}",
-          "{{WARP_ADDRESS_V6}}"
-        ],
-        "reserved": "{{WARP_RESERVED:json}}",
-        "peers": [
-          {
-            "publicKey": "{{WARP_PEER_PUBLIC_KEY}}",
-            "endpoint": "{{WARP_ENDPOINT}}"
-          }
-        ]
-      },
-      "streamSettings": {
-        "sockopt": {
-          "domainStrategy": "ForceIPv4v6"
-        }
-      }
-    },
-    {
-      "tag": "IPV4OUT",
-      "protocol": "freedom",
-      "streamSettings": {
-        "sockopt": {
-          "domainStrategy": "UseIPv4"
-        }
-      }
-    },
-    {
       "tag": "IPV6OUT",
       "protocol": "freedom",
       "streamSettings": {
@@ -158,24 +120,10 @@
           "domainStrategy": "UseIPv6"
         }
       }
-    },
-    {
-      "tag": "easy_proxy",
-      "protocol": "http",
-      "settings": {
-        "address": "127.0.0.1",
-        "port": 12355
-      }
     }
   ],
   "routing": {
     "rules": [
-      {
-        "inboundTag": [
-          "cpa-warp-proxy"
-        ],
-        "outboundTag": "warp"
-      },
       {
         "protocol": [
           "bittorrent"
@@ -184,7 +132,6 @@
       },
       {
         "domain": [
-          "featureassets.org",
           "geosite:google",
           "geosite:youtube"
         ],
@@ -195,17 +142,6 @@
           "geosite:category-ads-all"
         ],
         "outboundTag": "blocked"
-      },
-      {
-        "domain": [
-          "domain:clau.de",
-          "domain:claude.ai",
-          "domain:anthropic.com",
-          "geosite:openai",
-          "geosite:netflix",
-          "geosite:reddit"
-        ],
-        "outboundTag": "warp"
       },
       {
         "domain": [
@@ -220,12 +156,6 @@
           "geoip:cn"
         ],
         "outboundTag": "blocked"
-      },
-      {
-        "domain": [
-          "geosite:openai"
-        ],
-        "outboundTag": "easy_proxy"
       }
     ]
   }

@@ -147,7 +147,6 @@ cmd_deploy() {
     scheme_describe
     if [ -n "$active" ] && [ "$active" != "$SCHEME_ID" ]; then
         msg_warn "Active scheme is '$active'; it will be deactivated before '$SCHEME_ID' is deployed."
-        warn_lost_provides "$active"
     fi
 
     msg_step "Guide"

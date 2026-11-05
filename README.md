@@ -148,15 +148,13 @@ scheme is deactivated first: its firewall rules (comment
 `vpsautodeploy:<id>`) are deleted, xray stops, nginx keeps serving only
 `/nginx/conf/sites.d/`. Nothing else is touched — SSH, the firewall baseline,
 fail2ban, certificates, other services, and the old scheme's stored inputs, so
-switching back brings back the same keys and the same client links. If the old
-scheme provides something to local services (a local proxy port, …), you are
-warned before anything changes.
+switching back brings back the same keys and the same client links.
 
 ### What runs on the VPS
 
 | Component | Where | Notes |
 |---|---|---|
-| Xray-core | `/usr/local/bin/xray` → `/usr/local/lib/vpsautodeploy/xray/<version>/` | Official release, SHA2-256 from the release `.dgst`. Runs as user `xray` with only `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN`; config in `/usr/local/etc/xray/config.json`, logs in `/var/log/xray/` (logrotate daily, 7 kept). |
+| Xray-core | `/usr/local/bin/xray` → `/usr/local/lib/vpsautodeploy/xray/<version>/` | Official release, SHA2-256 from the release `.dgst`. Runs as user `xray` with only `CAP_NET_BIND_SERVICE`; config in `/usr/local/etc/xray/config.json`, logs in `/var/log/xray/` (logrotate daily, 7 kept). |
 | Geodata | `/usr/local/share/xray/` | Loyalsoldier `geoip.dat` / `geosite.dat`, sha256-verified. |
 | nginx | `/nginx` | Custom stealth build ([nginx-build](https://github.com/FinalisNothing/nginx-build)), SHA256SUMS-verified, jemalloc preloaded. Other local services add server blocks in `/nginx/conf/sites.d/`. |
 | Certificates | `/etc/vpsautodeploy/certs/<domain>/` | ZeroSSL via acme.sh (renewed by its cron), or files you supply. |
@@ -196,7 +194,7 @@ VPSAutoDeploy/
 │   ├── engine.sh                    scheme loading, inputs, uploads, steps, switching
 │   └── guide.sh                     checks a scheme's guide uses (DNS, Cloudflare, HTTPS, IPv6)
 ├── components/                      building blocks schemes use
-│   ├── firewall/  fail2ban/  nginx/  certs/  xray/  warp/
+│   ├── firewall/  fail2ban/  nginx/  certs/  xray/
 ├── schemes/
 │   ├── README.md                    what a scheme is, the contract, how to add one
 │   └── <id>/                        scheme.sh + templates (and a README)
@@ -216,7 +214,6 @@ VPSAutoDeploy/
 | Geodata | [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) | `.sha256sum` verified; active config tested against new files first | Category names may change |
 | nginx build | [FinalisNothing/nginx-build](https://github.com/FinalisNothing/nginx-build) | `SHA256SUMS.txt` verified; needs x86-64-v2 | — |
 | acme.sh | [get.acme.sh](https://github.com/acmesh-official/acme.sh) | Downloaded, then run; ZeroSSL, HTTP-01 on nginx | Installer behaviour may change |
-| Cloudflare WARP API | `api.cloudflareclient.com/v0a2158/reg` | Device registration; values can be supplied instead | Undocumented API |
 | Cloudflare IP lists | `cloudflare.com/ips-v4`, `ips-v6` | Sanity-checked (count, CIDR syntax) before use | — |
 
 ## Testing

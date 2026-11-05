@@ -7,7 +7,6 @@ SCHEME_TITLE="E2E only: VLESS REALITY Vision on tcp/8443, target www.cloudflare.
 SCHEME_SUMMARY=("Used by tests/e2e/run.sh to test scheme switching; not a real deployment.")
 SCHEME_PORTS=(tcp/8443)
 SCHEME_COMPONENTS=(xray)
-SCHEME_PROVIDES=()
 SCHEME_XRAY_VERSION=26.10.31
 
 scheme_inputs() {

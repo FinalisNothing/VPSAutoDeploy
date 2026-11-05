@@ -44,8 +44,6 @@ checks each item):
    domain, saved as `cf-fullchain.pem` + `cf-privkey.pem` (upload or paste).
 5. Provider firewall / security group, if any: TCP 80, TCP 443, UDP 443.
 
-The VPS needs IPv6 egress (Google and YouTube leave through IPv6).
-
 ## Inputs
 
 | Input | |
@@ -55,8 +53,8 @@ The VPS needs IPv6 egress (Google and YouTube leave through IPv6).
 | `CDN_DOMAIN` | XHTTP through Cloudflare |
 | `BACKEND_WEB` | the website the camouflage site mirrors (default `quarkus.io`) |
 | `XHTTP_PATH` | XHTTP path behind nginx (random by default) |
-| advanced | `XHTTP_REALITY_PATH`, `WARP_PROXY_PORT` (39641), link fingerprints, WARP peer/endpoint |
-| secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortId, VLESS decryption, WARP registration — generated on the VPS when empty |
+| advanced | `XHTTP_REALITY_PATH`, link fingerprints |
+| secrets | client UUIDs, REALITY private key / ML-DSA-65 seed / shortId, VLESS decryption — generated on the VPS when empty |
 
 ## Routing
 
@@ -64,21 +62,12 @@ First match wins:
 
 | Traffic | Outbound |
 |---|---|
-| the local WARP proxy (`cpa-warp-proxy` inbound) | `warp` |
 | BitTorrent | blocked |
-| `featureassets.org`, `geosite:google`, `geosite:youtube` | `IPV6OUT` (freedom, IPv6) |
+| `geosite:google`, `geosite:youtube` | `IPV6OUT` (freedom, IPv6) |
 | `geosite:category-ads-all` | blocked |
-| `clau.de`, `claude.ai`, `anthropic.com`, `geosite:openai`, `geosite:netflix`, `geosite:reddit` | `warp` (Cloudflare WARP, WireGuard) |
 | `geosite:cn`, `*.cn` | blocked |
 | `geoip:private`, `geoip:cn` | blocked |
-| `geosite:openai` | `easy_proxy` (HTTP proxy at 127.0.0.1:12355) — never reached: the WARP rule above matches these first |
 | everything else | `direct` |
-
-## Provided to local services
-
-| Endpoint | What |
-|---|---|
-| `127.0.0.1:39641` | SOCKS5/HTTP proxy without auth; everything leaves through WARP |
 
 ## Values that only work together
 
@@ -91,11 +80,4 @@ First match wins:
   to the XHTTP REALITY inbound) keeps `decryption: none`.
 - The unix socket paths are constants in `scheme.sh`, rendered into both
   `nginx.conf` and `xray.json`.
-- The WARP outbound uses a kernel TUN (xray has `CAP_NET_ADMIN`), which sets
-  `rp_filter=0` and enables IPv6 for all interfaces, and adds policy routing
-  rules for the WARP addresses while xray runs.
-- The WARP endpoint has A and AAAA records and xray picks one at random, so
-  `sockopt.domainStrategy: ForceIPv4v6` pins it to IPv4 (on a VPS without IPv6
-  an AAAA pick would leave WARP dead until the next restart). Domains inside
-  the tunnel are not affected: they resolve through it, via 1.1.1.1.
 - `loglevel: debug` — logs rotate daily, 7 kept.

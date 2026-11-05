@@ -15,8 +15,6 @@
 #   6. --deactivate leaves only the machine baseline
 #
 # usage: tests/e2e/run.sh [--keep]   (--keep leaves the container running)
-#   ALLOW_NO_WARP=1  tolerate a failed WARP egress check (networks that block
-#                    UDP to Cloudflare's WARP endpoint)
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -46,13 +44,6 @@ deploy_repo_only() {  # the same, but the e2e-only scheme is not visible (as if 
 expect() {  # expect DESCRIPTION COMMAND (run inside the container)
     if in_ct "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi
 }
-verify_failures() {  # failed checks in a log, minus the ones this network may not support
-    local f
-    f="$(grep -a '✗' "$1" || true)"
-    [ "${ALLOW_NO_WARP:-0}" = 1 ] && f="$(grep -v 'egress via WARP\|does not egress via WARP' <<<"$f" || true)"
-    printf '%s' "$f"
-}
-
 cleanup() { [ "$KEEP" = 1 ] || docker rm -f "$NAME" >/dev/null 2>&1; }
 trap cleanup EXIT
 
@@ -70,25 +61,20 @@ in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/fixtures.sh' || { echo "fixtures failed
 
 echo "== 1. zero-touch deploy"
 if deploy deploy-1 --yes; then pass "deploy exited 0"; else fail "deploy exited non-zero (see $OUT/deploy-1.log)"; fi
-v="$(verify_failures "$OUT/deploy-1.log")"
+v="$(grep -a '✗' "$OUT/deploy-1.log" || true)"
 [ -z "$v" ] && pass "all verify checks passed" || fail "verify checks failed: $v"
 expect "uploaded conf and origin certificate removed from the home dir" \
     '! ls /home/tester/vpsautodeploy.conf /home/tester/cf-fullchain.pem /home/tester/cf-privkey.pem'
 expect "params stored with mode 600" \
     '[ "$(stat -c %a /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/params)" = 600 ]'
 expect "xray runs as user xray" '[ "$(ps -o user= -C xray | sort -u)" = xray ]'
-expect "WARP outbound uses a kernel TUN (the -test run used the userspace stack)" \
-    'grep -q "Using kernel TUN" /var/log/xray/error.log'
 expect "ufw: 443/tcp, 80/tcp, 443/udp allowed with the scheme comment" \
     '[ "$(ufw show added | grep -c "vpsautodeploy:nginx-xray-443-fallback")" = 3 ]'
 in_ct 'cat /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' > "$OUT/links-1.txt"
 [ "$(grep -c '^vless://' "$OUT/links-1.txt")" = 4 ] && pass "4 client links" || fail "expected 4 client links"
 
 echo "== 2. status and clients"
-if deploy status-1 --status; then pass "--status exited 0"; else
-    v="$(verify_failures "$OUT/status-1.log")"
-    [ -z "$v" ] && pass "--status: only tolerated failures" || fail "--status failed: $v"
-fi
+deploy status-1 --status && pass "--status exited 0" || fail "--status failed: $(grep -a '✗' "$OUT/status-1.log")"
 if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' \
     > "$OUT/clients-1.log" 2>&1; then pass "all 4 clients connect"; else fail "clients: $(grep FAIL "$OUT/clients-1.log")"; fi
 cat "$OUT/clients-1.log"

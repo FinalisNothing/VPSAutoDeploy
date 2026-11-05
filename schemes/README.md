@@ -36,7 +36,6 @@ effects.
 | `SCHEME_SUMMARY` | yes | Array of lines the user reads when choosing: client entries, egress policy, **what the user must prepare**. |
 | `SCHEME_PORTS` | yes | Public ports as `tcp/443`, `udp/443`. Opened by `fw_open`; they must be free or held by the scheme's own components. |
 | `SCHEME_COMPONENTS` | yes | Components the scheme runs (`nginx`, `xray`). On deactivation the engine calls `<component>_release` for each, and their processes may hold `SCHEME_PORTS`. |
-| `SCHEME_PROVIDES` | no | Interfaces other local services rely on (a local proxy port, …). Switching to a scheme that lacks one warns the user. |
 | `SCHEME_XRAY_VERSION` | if xray is used | The Xray-core release the templates were verified against. Installed by default; `--xray-version` overrides. |
 | `scheme_inputs()` | yes | Declares every value with `input` (below). |
 | `scheme_guide()` | yes | Interactive part: explain what to prepare, `ask` for inputs, check the preparation. Must also run unattended when every value comes from the conf file. |
@@ -61,8 +60,8 @@ input NAME KIND "prompt" [--default V] [--advanced] [--secret] [--optional] [--h
 
 Kinds (`lib/common.sh`, `valid_value`) are strict on purpose — a valid value
 can never break out of the JSON string, nginx directive or URL it is rendered
-into: `email domain port path word uuid key32 wgkey vlessdec cidr4 cidr6
-hostport shortids bytes3`. Add a kind there rather than accepting free text.
+into: `email domain port path word uuid key32 vlessdec shortids`. Add a kind
+there rather than accepting free text.
 
 Values come from the uploaded `vpsautodeploy.conf`, then from the values an
 earlier run stored in `/etc/vpsautodeploy/schemes/<id>/params`, then from the
@@ -120,14 +119,13 @@ Defined in `components/<name>/component.sh` and available to every scheme:
 | `xray_install VERSION` | Release binary (sha256-verified), `xray` user and unit, logrotate, Loyalsoldier geodata. |
 | `xray_apply_config FILE` | `xray run -test` as the unprivileged user, back up, swap, restart, roll back. |
 | `xray_gen KIND`, `xray_derive KIND SECRET` | Keys from the installed binary; client halves (REALITY password, ML-DSA-65 verify, ML-KEM client key). |
-| `warp_register ARRAY` | Registers a Cloudflare WARP device. |
 | `vless_link UUID HOST PORT NAME KEY=VALUE…` | Share link per XTLS/Xray-core discussion #716. |
 
 Engine helpers: `input`, `ask`, `ask_file`, `param`, `set_param`,
 `ensure_secret`, `step`, `check_*`, `check_listening`, `check_unix_socket`,
 `check_service`; guide helpers in `lib/guide.sh`: `guide_text`,
 `guide_check_points_here`, `guide_check_behind_cloudflare`,
-`guide_check_https`, `guide_check_ipv6_egress`, `guide_problem`.
+`guide_check_https`, `guide_problem`.
 
 ## Adding a scheme
 

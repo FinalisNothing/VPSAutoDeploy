@@ -43,15 +43,9 @@ valid_value() {
         word)     [[ "$v" =~ ^[A-Za-z0-9._-]{1,64}$ ]] ;;
         uuid)     [[ "$v" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] ;;
         key32)    [[ "$v" =~ ^[A-Za-z0-9_-]{43}$ ]] ;;                 # base64url, 32 bytes (X25519 / ML-DSA-65 seed)
-        wgkey)    [[ "$v" =~ ^[A-Za-z0-9+/]{43}=$ ]] ;;                # std base64, 32 bytes (WireGuard)
         vlessdec) [[ "$v" =~ ^mlkem768x25519plus\.(native|xorpub|random)\.[0-9]+(-[0-9]+)?s(\.[A-Za-z0-9_-]+)+$ ]] ;;
-        cidr4)    [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ;;
-        cidr6)    [[ "$v" =~ ^[0-9A-Fa-f:]+/[0-9]{1,3}$ ]] ;;
-        hostport) [[ "$v" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] ;;
         shortids) printf '%s' "$v" | jq -e 'type == "array" and length > 0
                     and all(.[]; type == "string" and test("^([0-9a-f]{2}){0,8}$"))' >/dev/null 2>&1 ;;
-        bytes3)   printf '%s' "$v" | jq -e 'type == "array" and length == 3
-                    and all(.[]; type == "number" and . >= 0 and . <= 255 and . == floor)' >/dev/null 2>&1 ;;
         *)        die "internal: unknown value kind '$kind'" ;;
     esac
 }
@@ -65,13 +59,8 @@ describe_kind() {
         word)     echo "letters, digits, '.', '_' and '-' only (1-64 chars)" ;;
         uuid)     echo "a UUID" ;;
         key32)    echo "a 43-char base64url key (xray x25519 / mldsa65 output)" ;;
-        wgkey)    echo "a 44-char base64 WireGuard key" ;;
         vlessdec) echo "a VLESS Encryption 'decryption' string (mlkem768x25519plus.<mode>.<ticket>s.<key>)" ;;
-        cidr4)    echo "an IPv4 address with prefix, e.g. 172.16.0.2/32" ;;
-        cidr6)    echo "an IPv6 address with prefix, e.g. 2606:4700::1/128" ;;
-        hostport) echo "host:port" ;;
         shortids) echo 'a JSON array of hex strings, e.g. ["0123ab","cd"]' ;;
-        bytes3)   echo "a JSON array of 3 bytes, e.g. [100,203,204]" ;;
         *)        echo "$1" ;;
     esac
 }
