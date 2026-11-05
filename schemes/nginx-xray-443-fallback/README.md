@@ -74,3 +74,12 @@ policy (see "Egress" in the top-level README).
 - The unix socket paths are constants in `scheme.sh`, rendered into both
   `nginx.conf` and `xray.json`.
 - `loglevel: debug` — logs rotate daily, 7 kept.
+
+## Idle connections
+
+A proxied connection with no traffic in either direction is closed by xray
+after 300 s (its `connIdle` policy). The XHTTP locations in `nginx.conf` wait
+315 s, so nginx never cuts one first (its 60 s defaults did). Through the CDN,
+Cloudflare closes an idle connection after about 100 s, whatever the origin
+allows; applications that stay silent longer (SSH without keepalives, …) should
+use another entry or send keepalives.
