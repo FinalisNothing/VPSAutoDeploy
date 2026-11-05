@@ -20,15 +20,31 @@ download_bbr_installer() {
 # menu numbering can change between runs. Derive action numbers from the
 # downloaded script instead of hardcoding them — feeding a stale number could
 # trigger a different action (one menu entry uninstalls the kernel).
+# Only the arms of the main menu (case "$ACTION" in ... esac) count: the same
+# names also appear in function definitions and in other, smaller menus.
+installer_menu_awk() {
+    awk -v marker="${1:-}" -v want="${2:-}" '
+        /^case "\$ACTION" in/ { inmenu = 1; next }
+        !inmenu { next }
+        /^esac/ { exit }
+        /^[[:space:]]*[0-9]+\)[[:space:]]*$/ { n = $1; sub(/\).*/, "", n); next }
+        n == "" { next }
+        marker != "" && index($0, marker) { print n; exit }
+        want != "" && n == want { print }
+    ' "$BBR_INSTALLER"
+}
+
 installer_action_for() {
     local marker="$1" action
-    action="$(awk -v marker="$marker" '
-        /^[[:space:]]*[0-9]+\)[[:space:]]*$/ { n = $1; sub(/\).*/, "", n) }
-        n != "" && index($0, marker) { print n; exit }
-    ' "$BBR_INSTALLER")"
+    action="$(installer_menu_awk "$marker")"
     [ -n "$action" ] \
         || die "Cannot find a menu action for '$marker' in the downloaded BBR v3 installer. The upstream menu layout changed; refusing to guess menu numbers. Update phase1-kernel.sh."
     printf '%s' "$action"
+}
+
+# Body of one main-menu arm, to see which follow-up questions it asks.
+installer_action_body() {
+    installer_menu_awk "" "$1"
 }
 
 get_tcp_bbr_version() {
@@ -116,7 +132,14 @@ if [ "$RUNNING_ACTIONS_BBR_V3" -eq 1 ]; then
 else
     msg_info "Installing kernel (will NOT reboot yet)..."
     INSTALL_LATEST_ACTION="$(installer_action_for "install_latest_version")"
-    if ! printf '%s\nn\n' "$INSTALL_LATEST_ACTION" | bash "$BBR_INSTALLER"; then
+    # Answers: the menu action; Enter at the kernel-profile question if this
+    # installer asks it (Enter = its own default, the standard kernel); "n" to
+    # its reboot question - this script reboots at the end itself.
+    INSTALL_ANSWERS="$INSTALL_LATEST_ACTION"
+    if installer_action_body "$INSTALL_LATEST_ACTION" | grep -q select_kernel_profile; then
+        INSTALL_ANSWERS+=$'\n'
+    fi
+    if ! printf '%s\nn\n' "$INSTALL_ANSWERS" | bash "$BBR_INSTALLER"; then
         die "The BBR v3 installer failed before kernel installation completed. Check the messages above (GitHub API / network errors are the most common cause), then rerun phase1-kernel.sh."
     fi
     # The installer prints dpkg/bootloader errors but still exits 0, so
