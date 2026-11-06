@@ -279,3 +279,9 @@ deactivates.
 | `/etc/vpsautodeploy/egress.json` | Your egress policy, if you wrote one | No |
 | `/etc/vpsautodeploy/egress.default.json`, `egress.state` | The default egress as rendered for this VPS; which egress the running config has | Yes (the next run recreates them) |
 | `/etc/vpsautodeploy/backup/` | Configs replaced by later runs | Yes, once you are confident |
+
+## License
+
+[MIT](LICENSE). The tools this project downloads at deploy time (reinstall,
+the BBR v3 installer, Xray-core, geodata, nginx, acme.sh) are not part of it
+and keep their own licenses.
