@@ -25,6 +25,7 @@ and installing a fresh Debian 13 that boots with SSH already on your chosen port
   first, then SSH in" detour is needed — the reinstall itself sets the port.
 
 ```bash
+command -v curl || apt-get install -y curl   # some provider images ship without curl (use yum/apk elsewhere)
 curl -O https://raw.githubusercontent.com/FinalisNothing/VPSAutoDeploy/main/phase0-reinstall.sh
 bash phase0-reinstall.sh
 # prompts: username / password / SSH port -> YES -> run 'reboot' to start (~5-10 min)
