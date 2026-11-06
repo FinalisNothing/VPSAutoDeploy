@@ -73,7 +73,8 @@ policy (see "Egress" in the top-level README).
   to the XHTTP REALITY inbound) keeps `decryption: none`.
 - The unix socket paths are constants in `scheme.sh`, rendered into both
   `nginx.conf` and `xray.json`.
-- `loglevel: debug` — logs rotate daily, 7 kept.
+- Logs: errors at `warning`, no access log (no per-site browsing record on
+  the server). `phase2-deploy.sh --xray-log debug` while troubleshooting.
 
 ## Idle connections
 

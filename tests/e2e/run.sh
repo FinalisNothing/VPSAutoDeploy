@@ -73,6 +73,8 @@ expect "xray runs as user xray" '[ "$(ps -o user= -C xray | sort -u)" = xray ]'
 expect "xray config = scheme inbounds + default egress (direct first, 5 rules)" \
     'jq -e "(.inbounds | length) == 3 and .outbounds[0].tag == \"direct\" and (.routing.rules | length) == 5" /usr/local/etc/xray/config.json'
 expect "rendered default egress kept for reference" '[ -s /etc/vpsautodeploy/egress.default.json ]'
+expect "logs: warning, no access log" 'jq -e ".log.loglevel == \"warning\" and .log.access == \"none\"" /usr/local/etc/xray/config.json'
+expect "daily geodata timer enabled" 'systemctl is-enabled --quiet vpsautodeploy-geodata.timer'
 expect "ufw: 443/tcp, 80/tcp, 443/udp allowed with the scheme comment" \
     '[ "$(ufw show added | grep -c "vpsautodeploy:nginx-xray-443-fallback")" = 3 ]'
 in_ct 'cat /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' > "$OUT/links-1.txt"
@@ -83,6 +85,15 @@ deploy status-1 --status && pass "--status exited 0" || fail "--status failed: $
 if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' \
     > "$OUT/clients-1.log" 2>&1; then pass "all 4 clients connect"; else fail "clients: $(grep FAIL "$OUT/clients-1.log")"; fi
 cat "$OUT/clients-1.log"
+
+deploy geodata-1 --geodata && grep -q "is current" "$OUT/geodata-1.log" && pass "--geodata: current files left alone" || fail "--geodata failed"
+deploy xlog-1 --xray-log debug && expect "--xray-log debug turns on debug and the access log" \
+    'jq -e ".log.loglevel == \"debug\" and (.log.access | startswith(\"/\"))" /usr/local/etc/xray/config.json' \
+    || fail "--xray-log debug failed"
+deploy xlog-2 --xray-log default && expect "--xray-log default restores warning" \
+    'jq -e ".log.loglevel == \"warning\" and .log.access == \"none\"" /usr/local/etc/xray/config.json' \
+    || fail "--xray-log default failed"
+deploy links-qr --links --qr && grep -q "▄\|█" "$OUT/links-qr.log" && pass "--links --qr prints QR codes" || fail "--links --qr failed"
 
 echo "== 3. re-run converges"
 sum_before="$(in_ct 'sha256sum /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/params /usr/local/etc/xray/config.json /nginx/conf/nginx.conf')"

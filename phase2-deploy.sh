@@ -18,8 +18,10 @@
 #   bash phase2-deploy.sh [--scheme ID] [--yes] [--xray-version V]  deploy / switch
 #   bash phase2-deploy.sh --list                     schemes and what they need
 #   bash phase2-deploy.sh --status                   observed health (exit 1 on failure)
-#   bash phase2-deploy.sh --links                    client share links of the active scheme
+#   bash phase2-deploy.sh --links [--qr]             client share links of the active scheme (and QR codes)
 #   bash phase2-deploy.sh --update [--xray-version V]  xray-core + geodata, tested first
+#   bash phase2-deploy.sh --geodata                  geodata only (what the daily timer runs)
+#   bash phase2-deploy.sh --xray-log debug|default   debug log + access log while troubleshooting
 #   bash phase2-deploy.sh --deactivate [--yes]       remove what the active scheme owns
 #   bash phase2-deploy.sh --generate-config [ID] [FILE]  conf template for a scheme
 #
@@ -107,6 +109,17 @@ print_links() {
     msg_info "Client share links (also in $links):"
     echo ""
     cat "$links"
+    [ "$OPT_QR" = 1 ] || return 0
+    ensure_packages qrencode
+    local link name
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        echo ""
+        name="${link##*#}"
+        msg_info "${name//%20/ } (${#link} chars)"
+        qrencode -t ANSIUTF8 -l L -- "$link" 2>/dev/null \
+            || msg_warn "too long for a QR code (${#link} chars): copy the link above instead"
+    done < "$links"
 }
 
 ###############################################################################
@@ -193,7 +206,7 @@ cmd_deploy() {
     echo ""
     msg_info "Useful commands:"
     echo "  bash phase2-deploy.sh --status     # observed health of everything above"
-    echo "  bash phase2-deploy.sh --links      # client links again"
+    echo "  bash phase2-deploy.sh --links      # client links again (--qr for QR codes)"
     echo "  bash phase2-deploy.sh --update     # xray-core + geodata, tested before the swap"
     echo "  bash phase2-deploy.sh --list       # other schemes; re-run to switch"
     echo ""
@@ -286,6 +299,22 @@ cmd_update() {
     fi
 }
 
+cmd_geodata() {
+    require_root
+    take_lock
+    [ -x "$XRAY_BIN" ] || die "xray-core is not installed."
+    xray_geodata_update
+}
+
+cmd_xray_log() {
+    require_root
+    take_lock
+    case "${1:-}" in
+        debug|default) xray_set_log "$1" ;;
+        *) die "--xray-log needs 'debug' or 'default' (now: $(xray_log_mode))" ;;
+    esac
+}
+
 cmd_deactivate() {
     require_root
     take_lock
@@ -320,6 +349,8 @@ cmd_generate_config() {
 ###############################################################################
 CMD=deploy
 OPT_SCHEME=""
+OPT_QR=0
+XRAY_LOG_ARG=""
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -329,6 +360,9 @@ while [ $# -gt 0 ]; do
         --list)            CMD=list ;;
         --status)          CMD=status ;;
         --links)           CMD=links ;;
+        --qr)              OPT_QR=1 ;;
+        --geodata)         CMD=geodata ;;
+        --xray-log)        CMD=xraylog; XRAY_LOG_ARG="${2:-}"; shift ;;
         --update)          CMD=update ;;
         --deactivate)      CMD=deactivate ;;
         --generate-config) CMD=generate ;;
@@ -345,6 +379,8 @@ case "$CMD" in
     status)     cmd_status ;;
     links)      cmd_links ;;
     update)     cmd_update ;;
+    geodata)    cmd_geodata ;;
+    xraylog)    cmd_xray_log "$XRAY_LOG_ARG" ;;
     deactivate) cmd_deactivate ;;
     generate)   cmd_generate_config "${POSITIONAL[0]:-}" "${POSITIONAL[1]:-}" ;;
 esac

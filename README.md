@@ -137,9 +137,11 @@ Other commands:
 
 ```bash
 bash phase2-deploy.sh --status       # observed health of everything; exit 1 if a check fails
-bash phase2-deploy.sh --links        # client links of the active scheme
+bash phase2-deploy.sh --links [--qr] # client links of the active scheme (QR codes in the terminal)
 bash phase2-deploy.sh --update       # xray-core (the scheme's pinned version; --xray-version latest for the newest)
                                      # and geodata - tested against the active config before they replace anything
+bash phase2-deploy.sh --geodata      # geodata only; a daily timer runs this (04:00-05:00)
+bash phase2-deploy.sh --xray-log debug   # debug log + access log while troubleshooting; 'default' to stop
 bash phase2-deploy.sh --deactivate   # remove what the active scheme owns
 ```
 
@@ -154,8 +156,8 @@ switching back brings back the same keys and the same client links.
 
 | Component | Where | Notes |
 |---|---|---|
-| Xray-core | `/usr/local/bin/xray` → `/usr/local/lib/vpsautodeploy/xray/<version>/` | Official release, SHA2-256 from the release `.dgst`. Runs as user `xray` with only `CAP_NET_BIND_SERVICE`; config in `/usr/local/etc/xray/config.json`, logs in `/var/log/xray/` (logrotate daily, 7 kept). |
-| Geodata | `/usr/local/share/xray/` | Loyalsoldier `geoip.dat` / `geosite.dat`, sha256-verified. |
+| Xray-core | `/usr/local/bin/xray` → `/usr/local/lib/vpsautodeploy/xray/<version>/` | Official release, SHA2-256 from the release `.dgst`. Runs as user `xray` with only `CAP_NET_BIND_SERVICE`; config in `/usr/local/etc/xray/config.json`, errors at `warning` in `/var/log/xray/` (logrotate daily, 7 kept), no access log unless `--xray-log debug`. |
+| Geodata | `/usr/local/share/xray/` | Loyalsoldier `geoip.dat` / `geosite.dat`, sha256-verified, refreshed daily by `vpsautodeploy-geodata.timer` (tested against the active config first; xray restarts only when they changed). |
 | nginx | `/nginx` | Custom stealth build ([nginx-build](https://github.com/FinalisNothing/nginx-build)), SHA256SUMS-verified, jemalloc preloaded. Other local services add server blocks in `/nginx/conf/sites.d/`. |
 | Certificates | `/etc/vpsautodeploy/certs/<domain>/` | ZeroSSL via acme.sh (renewed by its cron), or files you supply. |
 | UFW, fail2ban | | Baseline belongs to the machine; scheme ports are tagged with the scheme. |

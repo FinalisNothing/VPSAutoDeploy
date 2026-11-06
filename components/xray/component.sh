@@ -36,6 +36,8 @@ XRAY_ASSETS="$VPSAD_ROOT/components/xray"
 XRAY_EGRESS_CUSTOM="$VPSAD_STATE_DIR/egress.json"
 XRAY_EGRESS_DEFAULT="$VPSAD_STATE_DIR/egress.default.json"
 XRAY_EGRESS_STATE="$VPSAD_STATE_DIR/egress.state"
+XRAY_LOG_STATE="$VPSAD_STATE_DIR/xray-log.state"
+GEODATA_UNIT=vpsautodeploy-geodata
 
 xray_zip_name() {
     case "$(uname -m)" in
@@ -142,6 +144,7 @@ xray_install() {
         msg_ok "Xray-core v$version installed at $XRAY_BIN"
     fi
     [ -s "$XRAY_ASSET_DIR/geoip.dat" ] && [ -s "$XRAY_ASSET_DIR/geosite.dat" ] || xray_geodata_update
+    xray_geodata_timer
 }
 
 # xray_test_config FILE [BIN] [ASSET_DIR]
@@ -263,9 +266,68 @@ xray_apply_scheme() {
         fi
     fi
     xray_compose "$rendered" "$egress" "$out"
+    xray_log_override "$out"
     xray_apply_config "$out"
     kv_save "$XRAY_EGRESS_STATE" st EGRESS
     rm -f "$egress" "$out"
+}
+
+# The machine's log setting (--xray-log): "debug" adds debug errors and the
+# access log on top of the scheme's own log settings; "default" leaves those.
+xray_log_mode() {
+    local -A st=()
+    [ -f "$XRAY_LOG_STATE" ] && kv_load "$XRAY_LOG_STATE" st
+    printf '%s' "${st[XRAY_LOG]:-default}"
+}
+
+xray_log_override() {
+    [ "$(xray_log_mode)" = debug ] || return 0
+    jq '.log = ((.log // {}) + {loglevel: "debug", access: "/var/log/xray/access.log", error: "/var/log/xray/error.log"})' \
+        "$1" > "$1.tmp" && mv -f "$1.tmp" "$1"
+    msg_warn "xray logs at debug level with an access log (--xray-log default to stop)"
+}
+
+# xray_set_log debug|default: store the setting and apply it to the running config.
+xray_set_log() {
+    local mode="$1" out
+    # shellcheck disable=SC2034 # read by kv_save through a nameref
+    local -A st=([XRAY_LOG]="$mode")
+    install -d -m 700 "$VPSAD_STATE_DIR"
+    kv_save "$XRAY_LOG_STATE" st XRAY_LOG
+    if [ ! -f "$XRAY_CONF" ]; then
+        msg_ok "xray log setting: $mode (applies at the next deployment)"
+        return 0
+    fi
+    out="$(mktemp)"
+    if [ "$mode" = debug ]; then
+        cp "$XRAY_CONF" "$out"
+        xray_log_override "$out"
+    else
+        jq '.log = {access: "none", error: "/var/log/xray/error.log", loglevel: "warning"}' "$XRAY_CONF" > "$out"
+    fi
+    xray_apply_config "$out"
+    rm -f "$out"
+}
+
+# Daily geodata refresh (Loyalsoldier publishes daily). A systemd timer runs
+# phase2-deploy.sh --geodata from this checkout: the files are swapped only
+# after the active config passes a test with them, and xray restarts only when
+# they changed - at a random moment between 04:00 and 05:00.
+xray_geodata_timer() {
+    local unit=/etc/systemd/system/$GEODATA_UNIT tmp changed=0
+    tmp="$(mktemp)"
+    printf '%s\n' "[Unit]" "Description=Refresh xray geodata (VPSAutoDeploy)" \
+        "After=network-online.target" "Wants=network-online.target" "" \
+        "[Service]" "Type=oneshot" "ExecStart=/bin/bash $VPSAD_ROOT/phase2-deploy.sh --geodata" > "$tmp"
+    install_if_changed "$tmp" "$unit.service" && changed=1
+    printf '%s\n' "[Unit]" "Description=Daily xray geodata refresh (VPSAutoDeploy)" "" \
+        "[Timer]" "OnCalendar=*-*-* 04:00:00" "RandomizedDelaySec=1h" "Persistent=true" "" \
+        "[Install]" "WantedBy=timers.target" > "$tmp"
+    install_if_changed "$tmp" "$unit.timer" && changed=1
+    rm -f "$tmp"
+    [ "$changed" -eq 0 ] || systemctl daemon-reload
+    systemctl enable --now --quiet "$GEODATA_UNIT.timer"
+    msg_ok "Geodata refreshes daily ($GEODATA_UNIT.timer)"
 }
 
 # Is the egress in the running config still the one phase2 would choose now?
@@ -303,6 +365,7 @@ xray_egress_verify() {
 
 xray_release() {
     systemctl disable --now xray 2>/dev/null || true
+    systemctl disable --now "$GEODATA_UNIT.timer" 2>/dev/null || true
     if [ -f "$XRAY_CONF" ]; then
         local backup
         backup="$(backup_file "$XRAY_CONF")"
@@ -342,6 +405,11 @@ xray_upgrade() {
 xray_geodata_update() {
     local tag tmp f want got
     tag="$(github_latest_tag "$GEODATA_REPO")" || die "Cannot resolve the latest $GEODATA_REPO release"
+    if [ "$tag" = "$(cat "$XRAY_ASSET_DIR/.vpsautodeploy-geodata" 2>/dev/null)" ] \
+        && [ -s "$XRAY_ASSET_DIR/geoip.dat" ] && [ -s "$XRAY_ASSET_DIR/geosite.dat" ]; then
+        msg_ok "Geodata $tag is current"
+        return 0
+    fi
     tmp="$(mktemp -d)"
     chmod 755 "$tmp"
     for f in geoip.dat geosite.dat; do
