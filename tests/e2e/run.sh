@@ -6,7 +6,8 @@
 # local test CA (see fixtures.sh). The run:
 #   1. zero-touch deploy of nginx-xray-443-fallback (--yes, conf + uploads)
 #   2. --status, then every client link through a real xray client
-#   3. a second run converges without changing anything
+#   3. --status notices a default egress policy that changed since it was
+#      applied, and a second run converges without changing anything
 #   4. a custom egress policy is reported until applied, then the switch to
 #      the e2e-only scheme: the old scheme's ports, nginx server blocks and
 #      xray config are gone, the new one works with the custom egress
@@ -70,9 +71,9 @@ expect "uploaded conf and origin certificate removed from the home dir" \
 expect "params stored with mode 600" \
     '[ "$(stat -c %a /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/params)" = 600 ]'
 expect "xray runs as user xray" '[ "$(ps -o user= -C xray | sort -u)" = xray ]'
-expect "xray config = scheme inbounds + default egress (direct first, 5 rules)" \
-    'jq -e "(.inbounds | length) == 3 and .outbounds[0].tag == \"direct\" and (.routing.rules | length) == 5" /usr/local/etc/xray/config.json'
-expect "rendered default egress kept for reference" '[ -s /etc/vpsautodeploy/egress.default.json ]'
+expect "xray config = scheme inbounds + the default egress policy" \
+    'jq -e --slurpfile e /opt/VPSAutoDeploy/components/xray/egress.json "(.inbounds | length) == 3 and .outbounds == \$e[0].outbounds and .routing == \$e[0].routing" /usr/local/etc/xray/config.json'
+expect "egress.state records the default policy" 'grep -qx EGRESS=default /etc/vpsautodeploy/egress.state'
 expect "logs: warning, no access log" 'jq -e ".log.loglevel == \"warning\" and .log.access == \"none\"" /usr/local/etc/xray/config.json'
 expect "daily geodata timer enabled" 'systemctl is-enabled --quiet vpsautodeploy-geodata.timer'
 expect "ufw: 443/tcp, 80/tcp, 443/udp allowed with the scheme comment" \
@@ -96,6 +97,11 @@ deploy xlog-2 --xray-log default && expect "--xray-log default restores warning"
 deploy links-qr --links --qr && grep -q "▄\|█" "$OUT/links-qr.log" && pass "--links --qr prints QR codes" || fail "--links --qr failed"
 
 echo "== 3. re-run converges"
+in_ct 'sed -i "s/^EGRESS_SHA256=.*/EGRESS_SHA256=0/" /etc/vpsautodeploy/egress.state'
+deploy status-1b --status
+grep -q "the default policy changed since it was applied" "$OUT/status-1b.log" \
+    && pass "--status notices a default policy that changed since it was applied" \
+    || fail "--status did not notice the changed default policy"
 sum_before="$(in_ct 'sha256sum /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/params /usr/local/etc/xray/config.json /nginx/conf/nginx.conf')"
 deploy deploy-2 --yes && pass "second run exited 0" || fail "second run exited non-zero"
 sum_after="$(in_ct 'sha256sum /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/params /usr/local/etc/xray/config.json /nginx/conf/nginx.conf')"
@@ -104,7 +110,7 @@ grep -q "xray config unchanged" "$OUT/deploy-2.log" && pass "xray not restarted"
 
 echo "== 4. custom egress, then switch to e2e-reality-8443"
 in_ct 'jq ".routing.rules += [{\"domain\": [\"domain:example.org\"], \"outboundTag\": \"blocked\"}]" \
-    /etc/vpsautodeploy/egress.default.json > /etc/vpsautodeploy/egress.json'
+    /opt/VPSAutoDeploy/components/xray/egress.json > /etc/vpsautodeploy/egress.json'
 deploy status-2 --status
 grep -q "is not in effect yet" "$OUT/status-2.log" && pass "--status reports the custom egress not applied yet" \
     || fail "--status did not notice the new custom egress"
@@ -130,7 +136,7 @@ in_ct 'cat /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' > "$OUT
 cmp -s "$OUT/links-1.txt" "$OUT/links-2.txt" && pass "same keys and links as before the switch" || fail "links changed across the switch"
 expect "e2e scheme's firewall rule removed" '! ufw show added | grep -q "vpsautodeploy:e2e-reality-8443"'
 expect "default egress is back" \
-    'jq -e "(.routing.rules | length) == 5 and ([.routing.rules[].domain[]?] | index(\"domain:example.org\") | not)" /usr/local/etc/xray/config.json'
+    'jq -e --slurpfile e /opt/VPSAutoDeploy/components/xray/egress.json ".outbounds == \$e[0].outbounds and .routing == \$e[0].routing" /usr/local/etc/xray/config.json'
 if in_ct 'bash /opt/VPSAutoDeploy/tests/e2e/clients.sh /etc/vpsautodeploy/schemes/nginx-xray-443-fallback/links.txt' \
     > "$OUT/clients-2.log" 2>&1; then pass "all 4 clients connect again"; else fail "clients after switch back: $(grep FAIL "$OUT/clients-2.log")"; fi
 

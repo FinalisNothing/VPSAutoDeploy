@@ -100,7 +100,7 @@ to prepare and asks only for what that scheme needs, checking each preparation
 and how to add one.
 
 ```bash
-bash phase2-deploy.sh --list     # every scheme: entries, egress, what it needs
+bash phase2-deploy.sh --list     # every scheme: its entries and what it needs
 bash phase2-deploy.sh            # choose, follow the guide, deploy, verify, print client links
 ```
 
@@ -170,29 +170,55 @@ the new config is rolled back.
 
 ### Egress
 
-Where proxied traffic leaves the VPS belongs to the machine, not to a scheme.
-Each scheme brings its inbounds; phase2 adds one egress policy to them, the
-same for every scheme.
+Where proxied traffic leaves the VPS — what is blocked, which address family a
+connection uses, whether some sites leave through somewhere else — is for
+whoever runs the machine to decide, not for a scheme. Each scheme brings its
+inbounds; phase2 adds one egress policy to them, the same for every scheme,
+from one of two files:
 
-**Default** (`components/xray/egress.json`), first match wins:
+| File | Whose | Used |
+|---|---|---|
+| `/etc/vpsautodeploy/egress.json` on the VPS | **yours** | whenever it exists; deployments, switches and updates never write it |
+| `components/xray/egress.json` in this repository | the author's | only while you have none of your own |
+
+**Write your own.** The default holds one person's preferences and ships so
+that a first deployment works; it is not advice about your traffic. Start from
+it, decide what you want, and keep your copy with your other deployment files —
+a VPS may not be yours for long:
+
+```bash
+cp components/xray/egress.json /etc/vpsautodeploy/egress.json   # on the VPS, as root
+# edit it, then
+bash phase2-deploy.sh
+```
+
+It may set `outbounds` (the first one takes whatever no rule matches),
+`routing` and `dns`. Like every config it is tested with `xray run -test`
+before it goes live; `--status` says when the file changed and a re-run is
+due. Remove the file and re-run to return to the default.
+
+The author's default, first match wins:
 
 | Traffic | Leaves |
 |---|---|
 | BitTorrent | blocked |
-| `geosite:google`, `geosite:youtube` | over IPv6 if the VPS has working IPv6 egress, otherwise direct (IPv4) |
 | `geosite:category-ads-all` | blocked |
 | `geosite:cn`, `*.cn`, `geoip:cn`, `geoip:private` | blocked |
-| everything else | direct |
+| everything else | `direct`, with `sockopt.domainStrategy: ForceIPv4v6`: over IPv4, over IPv6 only to sites that have no IPv4 address |
 
-IPv6 is checked at every deployment run; `--status` says when the machine
-changed since (IPv6 added or lost) and a re-run is due.
+Worth knowing when you write yours:
 
-**Your own policy:** write `/etc/vpsautodeploy/egress.json` — start from the
-rendered default next to it (`egress.default.json`) — then run
-`phase2-deploy.sh`. It may set `outbounds`, `routing` and `dns`; it replaces the
-default for every scheme and is never overwritten by deployments, switches or
-updates. Like every config it is tested with `xray run -test` before it goes
-live. Remove the file and re-run to return to the default.
+- A Freedom outbound without `sockopt.domainStrategy` lets Go pick the
+  address: on a VPS with IPv6, TCP goes over IPv6 and UDP (QUIC) over IPv4, so
+  one site can see two addresses. A strategy decides it for both (for
+  domains; a target given as an IP address keeps that address's family).
+- The second family of a strategy is used only when a site has no address of
+  the first, never because a connection failed: `ForceIPv6v4` on a VPS without
+  working IPv6 breaks every site that has an IPv6 address.
+- Any strategy other than `AsIs` resolves through xray's built-in DNS (the
+  system resolver while the config has no `dns`). If your policy adds DNS
+  servers given by domain name and their queries leave through that outbound,
+  the lookups loop: give DNS servers as IP addresses.
 
 ### Fail2ban layout
 
@@ -221,7 +247,7 @@ VPSAutoDeploy/
 ├── lib/
 │   ├── common.sh                    messages, value kinds, KEY=VALUE files, templates, downloads
 │   ├── engine.sh                    scheme loading, inputs, uploads, steps, switching
-│   └── guide.sh                     checks a scheme's guide uses (DNS, Cloudflare, HTTPS, IPv6)
+│   └── guide.sh                     checks a scheme's guide uses (DNS, Cloudflare, HTTPS)
 ├── components/                      building blocks schemes use
 │   ├── firewall/  fail2ban/  nginx/  certs/  xray/
 ├── schemes/
@@ -276,8 +302,8 @@ deactivates.
 | `/etc/vpsautodeploy/schemes/<id>/files/` | Uploaded files (e.g. origin certificate) | No |
 | `/etc/vpsautodeploy/schemes/<id>/links.txt` | Client links | Yes (`--links` recreates it) |
 | `/etc/vpsautodeploy/certs/` | TLS certificates | No |
-| `/etc/vpsautodeploy/egress.json` | Your egress policy, if you wrote one | No |
-| `/etc/vpsautodeploy/egress.default.json`, `egress.state` | The default egress as rendered for this VPS; which egress the running config has | Yes (the next run recreates them) |
+| `/etc/vpsautodeploy/egress.json` | Your egress policy, if you wrote one (see "Egress") | No |
+| `/etc/vpsautodeploy/egress.state` | Which egress policy the running config was built from | Yes (the next run recreates it) |
 | `/etc/vpsautodeploy/backup/` | Configs replaced by later runs | Yes, once you are confident |
 
 ## License

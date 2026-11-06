@@ -15,13 +15,11 @@
 # the machine, not to a scheme. A scheme's xray.json holds its inbounds (and,
 # only if it really needs them, its own outbounds and routing rules);
 # xray_apply_scheme composes it with the one egress policy in effect:
-#   default  components/xray/egress.json rendered for this machine: Google and
-#            YouTube leave over IPv6 when the VPS has working IPv6 egress,
-#            directly otherwise. Kept as /etc/vpsautodeploy/egress.default.json.
-#   custom   /etc/vpsautodeploy/egress.json, written by the user (a copy of
-#            egress.default.json is the place to start). It replaces the
-#            default for every scheme; deployments, switches and updates
-#            never write it.
+#   custom   /etc/vpsautodeploy/egress.json, the machine owner's own policy.
+#            Used for every scheme whenever it exists; deployments, switches
+#            and updates never write it.
+#   default  components/xray/egress.json, the author's policy, used only while
+#            there is no custom one. The same file on every machine.
 
 XRAY_BIN=/usr/local/bin/xray
 XRAY_LIB=/usr/local/lib/vpsautodeploy/xray
@@ -34,7 +32,7 @@ XRAY_REPO=XTLS/Xray-core
 GEODATA_REPO=Loyalsoldier/v2ray-rules-dat
 XRAY_ASSETS="$VPSAD_ROOT/components/xray"
 XRAY_EGRESS_CUSTOM="$VPSAD_STATE_DIR/egress.json"
-XRAY_EGRESS_DEFAULT="$VPSAD_STATE_DIR/egress.default.json"
+XRAY_EGRESS_DEFAULT="$XRAY_ASSETS/egress.json"
 XRAY_EGRESS_STATE="$VPSAD_STATE_DIR/egress.state"
 XRAY_LOG_STATE="$VPSAD_STATE_DIR/xray-log.state"
 GEODATA_UNIT=vpsautodeploy-geodata
@@ -201,28 +199,6 @@ xray_apply_config() {
     msg_ok "xray config activated, xray running${backup:+ (previous saved as $backup)}"
 }
 
-ipv6_egress_works() {
-    local code _
-    for _ in 1 2 3; do
-        code="$(curl -6 -sS -o /dev/null -w '%{http_code}' --max-time 8 https://www.google.com/generate_204 2>/dev/null || true)"
-        [ "$code" = 204 ] && return 0
-    done
-    return 1
-}
-
-# xray_egress_default OUT [IPV6_OUT]: the default policy rendered for this
-# machine. IPV6_OUT (IPV6OUT or direct) is detected unless given.
-xray_egress_default() {
-    local out="$1" ipv6="${2:-}"
-    if [ -z "$ipv6" ]; then
-        ipv6=direct
-        ipv6_egress_works && ipv6=IPV6OUT
-    fi
-    # shellcheck disable=SC2034 # read by render_template through a nameref
-    local -A vals=([IPV6_OUT]="$ipv6")
-    render_template "$XRAY_ASSETS/egress.json" "$out" json vals
-}
-
 # xray_compose SCHEME_JSON EGRESS_JSON OUT: one config. The egress outbounds
 # come first (the first is where unmatched traffic goes), then the scheme's;
 # the scheme's routing rules are checked before the egress rules. Egress may
@@ -243,33 +219,27 @@ xray_compose() {
 # xray_apply_scheme RENDERED: compose a scheme's xray.json with the egress
 # policy in effect, then xray_apply_config. Records which policy that was.
 xray_apply_scheme() {
-    local rendered="$1" egress out ipv6=direct
-    local -A st=()
-    egress="$(mktemp)"
-    out="$(mktemp)"
-    ipv6_egress_works && ipv6=IPV6OUT
-    xray_egress_default "$egress" "$ipv6"
-    install -d -m 700 "$VPSAD_STATE_DIR"
-    install -m 600 "$egress" "$XRAY_EGRESS_DEFAULT"
+    local rendered="$1" egress="$XRAY_EGRESS_DEFAULT" out
+    local -A st=([EGRESS]=default)
     if [ -f "$XRAY_EGRESS_CUSTOM" ]; then
         jq -e 'type == "object"' "$XRAY_EGRESS_CUSTOM" >/dev/null 2>&1 \
             || die "$XRAY_EGRESS_CUSTOM is not a JSON object"
-        cp "$XRAY_EGRESS_CUSTOM" "$egress"
-        st=([EGRESS]=custom [EGRESS_SHA256]="$(sha256_of "$XRAY_EGRESS_CUSTOM")")
+        egress="$XRAY_EGRESS_CUSTOM"
+        st=([EGRESS]=custom)
         msg_info "Egress: your policy in $XRAY_EGRESS_CUSTOM"
     else
-        st=([EGRESS]=default [EGRESS_IPV6_OUT]="$ipv6")
-        if [ "$ipv6" = IPV6OUT ]; then
-            msg_info "Egress: default policy; Google and YouTube leave over IPv6"
-        else
-            msg_info "Egress: default policy; no IPv6 egress here, so Google and YouTube leave over IPv4"
-        fi
+        msg_info "Egress: the author's default policy ($XRAY_EGRESS_DEFAULT); yours goes in $XRAY_EGRESS_CUSTOM"
     fi
+    st[EGRESS_SHA256]="$(sha256_of "$egress")"
+    out="$(mktemp)"
     xray_compose "$rendered" "$egress" "$out"
     xray_log_override "$out"
     xray_apply_config "$out"
+    install -d -m 700 "$VPSAD_STATE_DIR"
     kv_save "$XRAY_EGRESS_STATE" st EGRESS
-    rm -f "$egress" "$out"
+    # Earlier versions kept the default as rendered for the machine here.
+    rm -f "$VPSAD_STATE_DIR/egress.default.json"
+    rm -f "$out"
 }
 
 # The machine's log setting (--xray-log): "debug" adds debug errors and the
@@ -330,10 +300,9 @@ xray_geodata_timer() {
     msg_ok "Geodata refreshes daily ($GEODATA_UNIT.timer)"
 }
 
-# Is the egress in the running config still the one phase2 would choose now?
+# Is the egress in the running config still the policy phase2 would apply now?
 xray_egress_verify() {
     local -A st=()
-    local ipv6=direct
     [ -f "$XRAY_EGRESS_STATE" ] && kv_load "$XRAY_EGRESS_STATE" st
     if [ -f "$XRAY_EGRESS_CUSTOM" ]; then
         if [ "${st[EGRESS]:-}" != custom ]; then
@@ -349,17 +318,10 @@ xray_egress_verify() {
         check_warn "egress: $XRAY_EGRESS_CUSTOM was removed; run phase2-deploy.sh to return to the default"
         return 0
     fi
-    ipv6_egress_works && ipv6=IPV6OUT
-    if [ "${st[EGRESS_IPV6_OUT]:-}" != "$ipv6" ]; then
-        if [ "$ipv6" = IPV6OUT ]; then
-            check_warn "egress: this VPS has IPv6 egress now, but Google/YouTube still leave over IPv4 - run phase2-deploy.sh"
-        else
-            check_warn "egress: IPv6 egress stopped working; Google/YouTube are routed to it - run phase2-deploy.sh to use IPv4"
-        fi
-    elif [ "$ipv6" = IPV6OUT ]; then
-        check_ok "egress: default policy, Google/YouTube over IPv6 (IPv6 egress works)"
+    if [ "${st[EGRESS_SHA256]:-}" != "$(sha256_of "$XRAY_EGRESS_DEFAULT")" ]; then
+        check_warn "egress: the default policy changed since it was applied - run phase2-deploy.sh"
     else
-        check_ok "egress: default policy, Google/YouTube over IPv4 (no IPv6 egress)"
+        check_ok "egress: the author's default policy ($XRAY_EGRESS_DEFAULT; yours would go in $XRAY_EGRESS_CUSTOM)"
     fi
 }
 

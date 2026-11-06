@@ -2,20 +2,16 @@
   "outbounds": [
     {
       "tag": "direct",
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "ForceIPv4v6"
+        }
+      }
     },
     {
       "tag": "blocked",
       "protocol": "blackhole"
-    },
-    {
-      "tag": "IPV6OUT",
-      "protocol": "freedom",
-      "streamSettings": {
-        "sockopt": {
-          "domainStrategy": "UseIPv6"
-        }
-      }
     }
   ],
   "routing": {
@@ -25,13 +21,6 @@
           "bittorrent"
         ],
         "outboundTag": "blocked"
-      },
-      {
-        "domain": [
-          "geosite:google",
-          "geosite:youtube"
-        ],
-        "outboundTag": "{{IPV6_OUT}}"
       },
       {
         "domain": [
