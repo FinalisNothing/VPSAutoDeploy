@@ -24,6 +24,12 @@
       },
       {
         "domain": [
+          "geosite:google"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "domain": [
           "geosite:category-ads-all"
         ],
         "outboundTag": "blocked"
