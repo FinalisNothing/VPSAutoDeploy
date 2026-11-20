@@ -203,8 +203,15 @@ The author's default, first match wins:
 |---|---|
 | BitTorrent | blocked |
 | `geosite:category-ads-all` | blocked |
+| `geosite:google` | `IPV6OUT`, with `sockopt.domainStrategy: ForceIPv6`: IPv6 only; requests fail if IPv6 resolution or connectivity fails |
 | `geosite:cn`, `*.cn`, `geoip:cn`, `geoip:private` | blocked |
 | everything else | `direct`, with `sockopt.domainStrategy: ForceIPv4v6`: over IPv4, over IPv6 only to sites that have no IPv4 address |
+
+The Google exception deliberately follows the ad block and precedes the CN
+blocks: Google CDN names can also be listed under CN. This preserves SDK
+and browser downloads while Google ad domains remain blocked. `IPV6OUT`
+connects directly over IPv6 because Google classifies the author's IPv4
+address as China.
 
 Worth knowing when you write yours:
 

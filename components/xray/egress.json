@@ -12,6 +12,15 @@
     {
       "tag": "blocked",
       "protocol": "blackhole"
+    },
+    {
+      "tag": "IPV6OUT",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "ForceIPv6"
+        }
+      }
     }
   ],
   "routing": {
@@ -24,15 +33,15 @@
       },
       {
         "domain": [
-          "geosite:google"
-        ],
-        "outboundTag": "direct"
-      },
-      {
-        "domain": [
           "geosite:category-ads-all"
         ],
         "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "geosite:google"
+        ],
+        "outboundTag": "IPV6OUT"
       },
       {
         "domain": [
